@@ -296,6 +296,30 @@ def scan_timeline(source, fps, origin, cancellation=None, length=None):
     return timestamps
 
 
+def align_range_to_timestamps(timestamps, start, end, length):
+    """Snap In/Out to the nearest verified frame boundaries, including EOF."""
+    if len(timestamps) < 2 or not (0 <= start < end <= length):
+        raise ValueError('Проверьте границы In и Out')
+    boundaries = list(timestamps)
+    if length > boundaries[-1] + 1e-9:
+        boundaries.append(length)
+
+    def nearest_index(value):
+        index = bisect_left(boundaries, value)
+        if index == 0:
+            return 0
+        if index == len(boundaries):
+            return len(boundaries) - 1
+        before, after = boundaries[index - 1], boundaries[index]
+        return index - 1 if value - before <= after - value else index
+
+    first_index, end_index = nearest_index(start), nearest_index(end)
+    snapped_start, snapped_end = boundaries[first_index], boundaries[end_index]
+    if end_index <= first_index:
+        raise ValueError('После привязки к кадрам выбранный отрывок пуст')
+    return first_index, end_index, snapped_start, snapped_end
+
+
 def source_fingerprint(source, state):
     return (str(source), state.st_size, state.st_mtime_ns, state.st_ctime_ns, state.st_ino)
 
@@ -333,11 +357,11 @@ def prepare(source, start, end, cfg, target, cancellation=None, analysis_cache=N
     if abs(float(info.get('format', {}).get('start_time', 0)) - origin) > .001:
         raise ValueError('Начало видеодорожки не совпадает с началом файла')
     length = duration(video, info)
-    validate_range(start, end, length, cfg, fps)
-    for track in audio:
-        offset = float(track.get('start_time', 0)) - origin
-        if abs(offset) > 0.01 or duration(track, info) + 0.01 < end:
-            raise ValueError('Аудиодорожка начинается или заканчивается вне диапазона; обработка отменена')
+    requested_range = (start, end)
+    if not all(math.isfinite(value) for value in (start, end, length, fps)) or not (
+        0 <= start < end <= length and fps > 0
+    ):
+        raise ValueError('Проверьте границы In и Out')
     # Until arbitrary VFR boundaries have been verified, refuse VFR and use
     # a frame grid. A nominal rate alone is not proof, so scan frame timestamps.
     if cancellation:
@@ -351,15 +375,15 @@ def prepare(source, start, end, cfg, target, cancellation=None, analysis_cache=N
     if analysis_cache is not None and not cached:
         analysis_cache.clear()
         analysis_cache.update(fingerprint=fingerprint, info=info, timestamps=timestamps)
-    first_index = bisect_left(timestamps, start - 1e-7)
-    last_index = bisect_left(timestamps, end - 1e-7)
+    first_index, last_index, start, end = align_range_to_timestamps(timestamps, start, end, length)
     selected_count = last_index - first_index
-    if not selected_count:
-        raise ValueError('В выбранном диапазоне нет кадров')
-    first = timestamps[first_index]
-    # A non-frame-aligned start creates different video/audio origins; reject it.
-    if abs(first - start) > 0.001 or abs(selected_count/fps - (end-start)) > 0.001:
-        raise ValueError('Границы должны совпадать с границами кадров')
+    validate_range(start, end, length, cfg, fps)
+    for track in audio:
+        offset = float(track.get('start_time', 0)) - origin
+        if abs(offset) > 0.01 or duration(track, info) + 0.01 < end:
+            raise ValueError('Аудиодорожка начинается или заканчивается вне диапазона; обработка отменена')
+    if analysis_cache is not None:
+        analysis_cache.update(alignment_request=requested_range, aligned_range=(start, end))
     clip_length = end - start
     timecode = range_timecode(info, fps, first_index)
     vf = pair_filters(cfg, 'video', fps, clip_length, 0, True, selected_count)

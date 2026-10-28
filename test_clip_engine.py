@@ -6,7 +6,8 @@ import pytest
 
 from config import DEFAULT
 from media import probe, run, tool
-from clip_engine import prepare, publish, range_timecode, visible_dimensions, matching_export, export_signature
+from clip_engine import (align_range_to_timestamps, prepare, publish, range_timecode,
+                         visible_dimensions, matching_export, export_signature)
 from test_fade import sample
 
 
@@ -32,6 +33,45 @@ def test_visible_dimensions_reject_invalid_crop():
     video['side_data_list'][0]['crop_right'] = 1
     with pytest.raises(ValueError, match='чётным'):
         visible_dimensions(video)
+
+
+def test_range_uses_nearest_verified_pts_not_nominal_fps():
+    from array import array
+    fps = 29.97
+    timestamps = array('d', (frame / 30 for frame in range(151)))
+    start, end = 30 / fps, 90 / fps
+    first, last, aligned_start, aligned_end = align_range_to_timestamps(
+        timestamps, start, end, 5)
+    assert (first, last) == (30, 90)
+    assert aligned_start == pytest.approx(1.0)
+    assert aligned_end == pytest.approx(3.0)
+
+
+def test_prepare_snaps_requested_times_to_actual_frame_timestamps(tmp_path, monkeypatch):
+    import clip_engine
+    source = tmp_path / 'true-30-fps.mp4'
+    run([tool('ffmpeg'), '-v', 'error', '-f', 'lavfi', '-i', 'testsrc2=s=160x90:r=30:d=5',
+         '-an', '-c:v', 'libx264', source])
+    cfg = copy.deepcopy(DEFAULT)
+    cfg['engine'] = 'CPU'
+    for fade in cfg['fades'].values():
+        fade.update(value=.05, unit='seconds')
+    original_inspect = clip_engine.inspect
+    calls = []
+    def slightly_wrong_rate(info):
+        video, audio, fps = original_inspect(info)
+        if not calls:
+            calls.append(True)
+            return video, audio, 29.97
+        return video, audio, fps
+    monkeypatch.setattr(clip_engine, 'inspect', slightly_wrong_rate)
+    cache = {}
+    target = tmp_path / 'aligned.mp4'
+    prepare(source, 30/29.97, 90/29.97, cfg, target, analysis_cache=cache)
+    assert cache['aligned_range'] == pytest.approx((1, 3))
+    after = probe(target)
+    output_video = next(s for s in after['streams'] if s['codec_type'] == 'video')
+    assert int(output_video['nb_frames']) == 60
 
 
 def test_timecode_and_container_crop_work_together(tmp_path):
@@ -322,7 +362,9 @@ def test_window_preview_and_queue(sample, tmp_path, monkeypatch):
     assert window.candidate, window.notice.text()
     assert window.preview_mode
     window.position_changed(250)
-    assert window.slider.value() == round(window.preview_start * 1000) + 250
+    playhead_time = (round(window.preview_start * 1000) + 250) / 1000
+    nearest_playhead = min(window.frame_boundaries, key=lambda stamp: abs(stamp - playhead_time))
+    assert window.slider.value() == int(nearest_playhead * 1000 + .5)
     first_preview = window.candidate.read_bytes()
     window.enqueue()
     window.in_spin().setValue(1.001)

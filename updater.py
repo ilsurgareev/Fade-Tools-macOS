@@ -16,7 +16,7 @@ from PySide6.QtCore import QObject, QUrl, Signal
 from PySide6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest
 
 
-APP_VERSION = '0.2.6'
+APP_VERSION = '0.2.7'
 REPOSITORY = 'ilsurgareev/Fade-Tools-macOS'
 RELEASE_API = f'https://api.github.com/repos/{REPOSITORY}/releases/latest'
 ASSET_NAME = 'Fade-Tools-macOS-AppleSilicon.zip'

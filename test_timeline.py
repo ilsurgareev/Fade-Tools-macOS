@@ -84,7 +84,7 @@ def test_seeking_outside_preview_returns_to_source(sample, tmp_path, monkeypatch
     switches = []
     monkeypatch.setattr(window, 'show_original', lambda position=None, resume=False: switches.append((position, resume)))
     window.seek(2000)
-    assert switches and switches[0][0] == 2000
+    assert switches and switches[0][0] == window._frame_milliseconds(2)
     window.close()
     settings.close()
 

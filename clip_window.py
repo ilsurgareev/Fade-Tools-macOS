@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import tempfile
+from bisect import bisect_left
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, QTimer, QUrl, Signal, Qt, QRect, QRectF, QSize
@@ -18,7 +19,7 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton, Q
 from clip_engine import Cancellation, prepare, publish, visible_dimensions, matching_export
 from live_fade import gain
 from clip_plan import clip_name, validate_range
-from frame_time import format_frame_time, parse_frame_time
+from frame_time import format_frame_index, format_frame_time, parse_frame_time
 from media import duration, inspect, probe
 from config import app_dir, validate
 
@@ -219,6 +220,7 @@ class FrameTimeSpinBox(QDoubleSpinBox):
     """Show elapsed minutes:seconds:frames while keeping seconds internally."""
     def __init__(self):
         self._fps = 25.0
+        self._frame_boundaries = None
         super().__init__()
         self.setDecimals(9)
         self.setRange(0, 1000000)
@@ -229,12 +231,33 @@ class FrameTimeSpinBox(QDoubleSpinBox):
         self._fps = fps
         self.lineEdit().setText(self.textFromValue(self.value()))
 
+    def set_frame_boundaries(self, boundaries):
+        self._frame_boundaries = boundaries
+        self.lineEdit().setText(self.textFromValue(self.value()))
+
+    def frame_index(self, value):
+        if not self._frame_boundaries:
+            return round(value * self._fps)
+        index = bisect_left(self._frame_boundaries, value)
+        if index == 0:
+            return 0
+        if index == len(self._frame_boundaries):
+            return len(self._frame_boundaries) - 1
+        before, after = self._frame_boundaries[index - 1:index + 1]
+        return index - 1 if value - before <= after - value else index
+
     def textFromValue(self, value):
+        if self._frame_boundaries:
+            return format_frame_index(self.frame_index(value), self._fps)
         return format_frame_time(value, self._fps)
 
     def valueFromText(self, text):
         try:
-            return parse_frame_time(text, self._fps)
+            value = parse_frame_time(text, self._fps)
+            if self._frame_boundaries:
+                frame = max(0, min(len(self._frame_boundaries) - 1, round(value * self._fps)))
+                return self._frame_boundaries[frame]
+            return value
         except ValueError:
             return self.value()
 
@@ -247,8 +270,12 @@ class FrameTimeSpinBox(QDoubleSpinBox):
         return state, text, position
 
     def stepBy(self, steps):
-        frame = round(self.value() * self._fps) + steps
-        self.setValue(max(0, frame) / self._fps)
+        frame = self.frame_index(self.value()) + steps
+        if self._frame_boundaries:
+            frame = max(0, min(len(self._frame_boundaries) - 1, frame))
+            self.setValue(self._frame_boundaries[frame])
+        else:
+            self.setValue(max(0, frame) / self._fps)
 
 
 class LiveVideo(QGraphicsView):
@@ -306,6 +333,7 @@ class ClipWindow(QWidget):
         super().__init__()
         self.settings = settings
         self.fps = 25.0
+        self.frame_boundaries = None
         self.setAttribute(Qt.WA_DeleteOnClose, True)
         self.setWindowTitle('Fade Tools · Отрывки')
         self.resize(850, 720)
@@ -617,10 +645,13 @@ class ClipWindow(QWidget):
             video, audio, fps = inspect(info)
             self.source = Path(path).resolve(strict=True)
             self.analysis_cache.clear()
+            self.frame_boundaries = None
             self.info = info
             self.fps = fps
             self.in_spin().set_fps(fps)
             self.out.set_fps(fps)
+            self.in_spin().set_frame_boundaries(None)
+            self.out.set_frame_boundaries(None)
             self.audio_tracks = len(audio)
             displayed = visible_dimensions(video)
             self.crop_note = (f' · Видимая область исходника: {displayed[0]}×{displayed[1]}'
@@ -693,15 +724,43 @@ class ClipWindow(QWidget):
         if self.pending_seek is None:
             self.update_position_label(absolute)
         if not self.slider.isSliderDown() and self.pending_seek is None:
-            self.slider.setValue(absolute)
+            self.slider.setValue(self._frame_milliseconds(absolute / 1000))
 
     def time_label(self, milliseconds):
-        return format_frame_time(max(0, milliseconds) / 1000, self.fps)
+        seconds = max(0, milliseconds) / 1000
+        return self.frame_label(seconds)
+
+    def frame_label(self, seconds):
+        if self.frame_boundaries:
+            return format_frame_index(self._frame_index(seconds), self.fps)
+        return format_frame_time(seconds, self.fps)
+
+    def _frame_index(self, seconds):
+        boundaries = self.frame_boundaries
+        if not boundaries:
+            return round(seconds * self.fps)
+        index = bisect_left(boundaries, seconds)
+        if index == 0:
+            return 0
+        if index == len(boundaries):
+            return len(boundaries) - 1
+        before, after = boundaries[index - 1:index + 1]
+        return index - 1 if seconds - before <= after - seconds else index
+
+    def _frame_time(self, seconds):
+        if self.frame_boundaries:
+            return self.frame_boundaries[self._frame_index(seconds)]
+        return round(seconds * self.fps) / self.fps
+
+    def _frame_milliseconds(self, seconds):
+        return int(self._frame_time(seconds) * 1000 + .5)
 
     def update_position_label(self, position):
         self.position_label.setText(f'{self.time_label(position)} / {self.time_label(self.slider.maximum())}')
 
     def seek(self, value):
+        value = self._frame_milliseconds(value / 1000)
+        self.slider.setValue(value)
         self.update_position_label(value)
         if self.live_mode and self.live_snapshot:
             _, start, end, _ = self.live_snapshot
@@ -750,8 +809,8 @@ class ClipWindow(QWidget):
         self.preview_button.setEnabled(False)
         self.cleanup_previews()
         self.snapshot()  # Snap the editable In/Out fields to the source frame grid.
-        self.slider.set_selection(int(round(self.in_spin().value()*self.fps)*1000/self.fps + .5),
-                                   int(round(self.out.value()*self.fps)*1000/self.fps + .5))
+        self.slider.set_selection(self._frame_milliseconds(self.in_spin().value()),
+                                  self._frame_milliseconds(self.out.value()))
         base = Path(clip_name(self.source, self.settings.suffix.text(), self.snapshot()[1]))
         directory = Path(self.settings.folder.text()).expanduser() if self.settings.folder.text() else self.source.parent
         self.queue.setToolTip('Добавить в очередь: ' + str(directory / base) + '\nПри совпадении имени добавятся начало и конец')
@@ -776,9 +835,9 @@ class ClipWindow(QWidget):
             self.notice.setText(str(exc))
 
     def snapshot(self):
-        # Keep the controls on the source frame grid so preview and queued render agree.
-        start = round(self.in_spin().value() * self.fps) / self.fps
-        end = round(self.out.value() * self.fps) / self.fps
+        # Prefer verified source PTS boundaries; nominal FPS is only a fallback.
+        start = self._frame_time(self.in_spin().value())
+        end = self._frame_time(self.out.value())
         self.in_spin().blockSignals(True)
         self.out.blockSignals(True)
         self.in_spin().setValue(start)
@@ -786,6 +845,32 @@ class ClipWindow(QWidget):
         self.in_spin().blockSignals(False)
         self.out.blockSignals(False)
         return self.source, start, end, copy.deepcopy(self.settings.data())
+
+    def _apply_cached_frame_grid(self, request):
+        aligned = self.analysis_cache.get('aligned_range')
+        if aligned is None or self.analysis_cache.get('alignment_request') != tuple(request):
+            return tuple(request)
+        timestamps = self.analysis_cache.get('timestamps')
+        if timestamps:
+            end = self.slider.maximum() / 1000
+            boundaries = list(timestamps)
+            if end > boundaries[-1] + 1e-9:
+                boundaries.append(end)
+            self.frame_boundaries = boundaries
+            self.in_spin().set_frame_boundaries(boundaries)
+            self.out.set_frame_boundaries(boundaries)
+        start, end = aligned
+        if (abs(self.in_spin().value() - request[0]) < 1e-6 and
+                abs(self.out.value() - request[1]) < 1e-6):
+            self.in_spin().blockSignals(True)
+            self.out.blockSignals(True)
+            self.in_spin().setValue(start)
+            self.out.setValue(end)
+            self.in_spin().blockSignals(False)
+            self.out.blockSignals(False)
+            self.slider.set_selection(self._frame_milliseconds(start), self._frame_milliseconds(end))
+            self.live_snapshot = (self.source, start, end, copy.deepcopy(self.settings.data()))
+        return self.source, start, end, self.settings.data()
 
     def launch(self, operation, callback):
         work = Work(operation)
@@ -828,6 +913,7 @@ class ClipWindow(QWidget):
                 self.resume_preview = False
                 self.notice.setText('Ошибка предпросмотра: ' + error)
             else:
+                aligned_snapshot = self._apply_cached_frame_grid(snapshot[1:3])
                 try:
                     self.candidate_source_state = snapshot[0].stat()
                 except OSError as exc:
@@ -838,8 +924,9 @@ class ClipWindow(QWidget):
                 self.candidates.add(Path(result))
                 self.queue.setEnabled(True)
                 suffix = ' · звучит первая из %d аудиодорожек' % self.audio_tracks if self.audio_tracks > 1 else ''
-                self.notice.setText('Точный временный просмотр готов · для сохранения нажмите «Добавить в очередь» · In %.3f с · Out %.3f с%s%s' %
-                                    (snapshot[1], snapshot[2], suffix, self.crop_note))
+                self.notice.setText('Точный временный просмотр готов · для сохранения нажмите «Добавить в очередь» · In %s · Out %s%s%s' %
+                                    (self.frame_label(aligned_snapshot[1]),
+                                     self.frame_label(aligned_snapshot[2]), suffix, self.crop_note))
                 if self.resume_preview:
                     self.resume_preview = False
                     self.play_exact()
@@ -1018,19 +1105,59 @@ class ClipWindow(QWidget):
         if preview:
             self.queued_previews[preview] = self.queued_previews.get(preview, 0) + 1
         fps = float(restored.get('fps', self.fps)) if restored else self.fps
-        range_label = f'{format_frame_time(snapshot[1], fps)}–{format_frame_time(snapshot[2], fps)}'
+        range_label = f'{self.frame_label(snapshot[1])}–{self.frame_label(snapshot[2])}'
         self.jobs.addItem(label + ' · ' + range_label + ' · в очереди')
         self.jobs.show()
         item = self.jobs.item(self.jobs.count()-1)
         token = Cancellation()
-        record = (item, label, token)
+        record = [item, label, token]
+        original_range = snapshot[1:3]
         def operation():
+            nonlocal snapshot, label, destination, identity, output_path, output_fingerprint, range_label
             current = snapshot[0].stat()
             if fingerprint(current) != source_fingerprint:
                 raise ValueError('Исходный файл изменился после добавления в очередь')
+            requested_range = original_range
             candidate = preview or prepare(*snapshot, target, cancellation=token,
                                            analysis_cache=self.analysis_cache)
             try:
+                aligned = self.analysis_cache.get('aligned_range')
+                if self.analysis_cache.get('alignment_request') == requested_range and aligned:
+                    aligned_start, aligned_end = aligned
+                    if (aligned_start, aligned_end) != requested_range:
+                        snapshot = (snapshot[0], aligned_start, aligned_end, snapshot[3])
+                        range_label = (f'{self.frame_label(aligned_start)}–'
+                                       f'{self.frame_label(aligned_end)}')
+                        identity = (os.path.normcase(str(snapshot[0])),
+                                    round(aligned_start, 9), round(aligned_end, 9))
+                        desired_label = clip_name(snapshot[0], snapshot[3]['suffix'], aligned_start)
+                        desired_path = directory / desired_label
+                        desired_destination = os.path.normcase(str(desired_path.resolve()))
+                        if ((desired_destination != destination and
+                             desired_destination in self.queued_destinations) or desired_path.exists()):
+                            desired_label = clip_name(snapshot[0], snapshot[3]['suffix'],
+                                                      aligned_start, aligned_end)
+                            desired_path = directory / desired_label
+                            desired_destination = os.path.normcase(str(desired_path.resolve()))
+                            number = 2
+                            while (desired_destination in self.queued_destinations or
+                                   desired_path.exists()):
+                                desired_label = clip_name(snapshot[0], snapshot[3]['suffix'],
+                                                          aligned_start, aligned_end, number)
+                                desired_path = directory / desired_label
+                                desired_destination = os.path.normcase(str(desired_path.resolve()))
+                                number += 1
+                        if desired_destination != destination:
+                            self.queued_destinations.discard(destination)
+                            self.queued_destinations.add(desired_destination)
+                            destination = desired_destination
+                            output_path = desired_path
+                            output_fingerprint = None
+                        label = desired_label
+                        record[1] = label
+                        self.queue_data[token].update(
+                            start=aligned_start, end=aligned_end, label=label,
+                            range_label=range_label, output_fingerprint=output_fingerprint)
                 token.phase('Сохраняем проверенный отрывок…', .99, .999)
                 current_output = output_path.stat() if output_path.exists() else None
                 if output_fingerprint != fingerprint(current_output):
@@ -1043,6 +1170,7 @@ class ClipWindow(QWidget):
             finally:
                 target.unlink(missing_ok=True)
         def done(result, error):
+            self._apply_cached_frame_grid(original_range)
             self.last_render = (label, error, token.overall_fraction)
             self.job_tokens.remove(record)
             item.setData(QueueItemDelegate.progress_role,

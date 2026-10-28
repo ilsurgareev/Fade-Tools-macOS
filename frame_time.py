@@ -9,6 +9,12 @@ def format_frame_time(seconds, fps):
     if not math.isfinite(seconds) or not math.isfinite(fps) or fps <= 0:
         raise ValueError('Некорректное время или частота кадров')
     frame = max(0, round(seconds * fps))
+    return format_frame_index(frame, fps)
+
+
+def format_frame_index(frame, fps):
+    if not math.isfinite(fps) or fps <= 0 or frame < 0:
+        raise ValueError('Некорректный номер кадра или частота кадров')
     whole = math.floor(frame / fps + 1e-9)
     first = math.ceil(whole * fps - 1e-9)
     offset = frame - first

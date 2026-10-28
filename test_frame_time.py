@@ -1,5 +1,5 @@
 import pytest
-from frame_time import format_frame_time, parse_frame_time
+from frame_time import format_frame_index, format_frame_time, parse_frame_time
 
 
 def test_elapsed_minutes_seconds_and_frames_round_trip():
@@ -37,4 +37,12 @@ def test_time_fields_accept_frame_labels_and_step_one_frame(tmp_path, monkeypatc
     field.stepUp()
     assert field.text() == '2:25:22'
     assert field.value() == pytest.approx(145.88)
+    boundaries = [frame / 30 for frame in range(181)]
+    field.set_fps(29.97)
+    field.set_frame_boundaries(boundaries)
+    field.setValue(boundaries[164])
+    assert field.text() == format_frame_index(164, 29.97)
+    field.lineEdit().setText('0:05:14')
+    field.interpretText()
+    assert field.value() == pytest.approx(boundaries[164])
     assert window.close()
