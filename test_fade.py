@@ -52,6 +52,20 @@ def test_default_fades_use_frames():
     assert all(fade['unit'] == 'frames' for fade in DEFAULT['fades'].values())
     assert [DEFAULT['fades'][key]['value'] for key in ('video_in', 'video_out', 'audio_in', 'audio_out')] == [0, 40, 14, 53]
     assert DEFAULT['presets']['Стандартный']['fades'] == DEFAULT['fades']
+    assert DEFAULT['suffix'] == ''
+    assert DEFAULT['presets']['Стандартный']['suffix'] == ''
+
+
+def test_migrate_removes_only_legacy_default_suffix():
+    from config import migrate
+    old = copy.deepcopy(DEFAULT)
+    old['suffix'] = '_fade'
+    old['presets']['Стандартный']['suffix'] = '_fade'
+    old['presets']['My custom'] = copy.deepcopy(old['presets']['Стандартный'])
+    migrated = migrate(old)
+    assert migrated['suffix'] == ''
+    assert migrated['presets']['Стандартный']['suffix'] == ''
+    assert migrated['presets']['My custom']['suffix'] == '_fade'
 
 
 def test_migrate_old_stock_fades_to_frame_default():

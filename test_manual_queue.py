@@ -334,10 +334,10 @@ def test_same_second_collisions_get_start_and_end_names(sample, tmp_path, monkey
     clips.out.setValue(1.5015)
     clips.enqueue()
     assert len(clips.waiting_jobs) == 2
-    assert clips.waiting_jobs[0][0][1].endswith('_000_fade.mp4')
-    assert clips.waiting_jobs[1][0][1].endswith('_000_001_fade.mp4')
+    assert clips.waiting_jobs[0][0][1].endswith('_000.mp4')
+    assert clips.waiting_jobs[1][0][1].endswith('_000_001.mp4')
     clips.enqueue()
-    assert clips.waiting_jobs[2][0][1].endswith('_000_001_2_fade.mp4')
+    assert clips.waiting_jobs[2][0][1].endswith('_000_001_2.mp4')
     for _ in range(3):
         clips.jobs.setCurrentRow(0)
         clips.remove_waiting_job()
@@ -458,7 +458,7 @@ def test_existing_unknown_result_is_not_overwritten(sample, tmp_path, monkeypatc
         return target
     monkeypatch.setattr(clip_window, 'prepare', prepare)
     clips.enqueue()
-    assert clips.waiting_jobs[0][0][1].endswith('_000_001_fade.mp4')
+    assert clips.waiting_jobs[0][0][1].endswith('_000_001.mp4')
     clips.start_queue()
     deadline = time.monotonic() + 5
     while clips.active and time.monotonic() < deadline:

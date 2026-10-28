@@ -8,15 +8,19 @@ from clip_plan import clip_name, validate_range
 
 
 def test_clip_name_uses_elapsed_minutes_and_seconds():
-    assert clip_name(Path('song.mov'), '_fade', 64) == 'song_104_fade.mp4'
-    assert clip_name(Path('song.mov'), '_fade', 3604) == 'song_10004_fade.mp4'
+    assert clip_name(Path('song.mov'), DEFAULT['suffix'], 64) == 'song_104.mp4'
+    assert clip_name(Path('song.mov'), DEFAULT['suffix'], 3604) == 'song_10004.mp4'
 
 
 def test_filename_uses_only_the_whole_start_second():
     assert clip_name('song.mov', '', 64) == 'song_104.mp4'
     assert clip_name('song.mov', '', 64.2002) == 'song_104.mp4'
     assert clip_name('song.mov', '', 64.4004) == 'song_104.mp4'
-    assert clip_name('song.mov', '_fade', 0.5005) == 'song_000_fade.mp4'
+    assert clip_name('song.mov', DEFAULT['suffix'], 0.5005) == 'song_000.mp4'
+
+
+def test_optional_custom_suffix_is_appended_after_timing():
+    assert clip_name('song.mov', '_mix', 64) == 'song_104_mix.mp4'
 
 
 def test_range_rejects_short_clip_and_invalid_boundaries():

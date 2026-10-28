@@ -337,7 +337,7 @@ def test_window_preview_and_queue(sample, tmp_path, monkeypatch):
         time.sleep(.02)
     assert 'готово:' in window.jobs.item(0).text(), window.jobs.item(0).text()
     assert 'готово:' in window.jobs.item(1).text(), window.jobs.item(1).text()
-    assert len(list(tmp_path.glob('*_fade*.mp4'))) == 2
+    assert len(list(tmp_path.glob('*_0*.mp4'))) == 2
     first_result = Path(window.jobs.item(0).text().split(' · готово: ', 1)[1])
     second_result = Path(window.jobs.item(1).text().split(' · готово: ', 1)[1])
     assert first_result != second_result
@@ -372,7 +372,7 @@ def test_failed_replace_keeps_previous_output(tmp_path, monkeypatch):
          'color=c=red:s=160x90:r=25:d=1', '-c:v', 'libx264',
          '-metadata', 'fade_tools_range=' + export_signature(source, 0, 1),
          '-movflags', '+use_metadata_tags', candidate])
-    target = tmp_path / 'source_000_fade.mp4'
+    target = tmp_path / 'source_000.mp4'
     target.write_bytes(candidate.read_bytes())
     previous = target.read_bytes()
     original = source.read_bytes()

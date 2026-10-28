@@ -89,8 +89,8 @@ def test_queue_snapshots_without_prepared_preview(sample, tmp_path, monkeypatch)
     assert clips.progress.isHidden()
     assert all(p.is_file() for p in files)
     assert files[0] != files[1]
-    assert files[0].name.endswith('_000_fade.mp4')
-    assert files[1].name.endswith('_001_fade.mp4')
+    assert files[0].name.endswith('_000.mp4')
+    assert files[1].name.endswith('_001.mp4')
     videos = [next(s for s in probe(p)['streams'] if s['codec_type']=='video') for p in files]
     assert [int(v['nb_frames']) for v in videos] == [30,21]
     clips.close()

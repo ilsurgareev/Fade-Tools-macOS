@@ -19,7 +19,7 @@ DEFAULT = {
     },
     'codec': 'H.265', 'engine': 'Apple VideoToolbox' if sys.platform == 'darwin' else 'NVENC', 'quality': 'master',
     'video_bitrate_mbps': 30,
-    'output_dir': '', 'suffix': '_fade', 'notifications': False,
+    'output_dir': '', 'suffix': '', 'notifications': False,
     'presets': {}, 'macos_engine_policy': 1,
 }
 
@@ -117,7 +117,13 @@ def migrate(data):
             data['fades'] = copy.deepcopy(DEFAULT['fades'])
         data.setdefault('presets', {})
         if isinstance(data['presets'], dict):
-            data['presets'].setdefault('Стандартный', copy.deepcopy(_DEFAULT_PRESET))
+            standard = data['presets'].setdefault('Стандартный', copy.deepcopy(_DEFAULT_PRESET))
+            if isinstance(standard, dict) and standard.get('suffix') == '_fade':
+                standard['suffix'] = ''
+        # `_fade` was the old shipped default. Clear it on upgrade while
+        # preserving every other setting and any explicitly named custom preset.
+        if data.get('suffix') == '_fade':
+            data['suffix'] = ''
     return data
 
 
