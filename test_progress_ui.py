@@ -5,19 +5,23 @@ def test_progress_bar_and_result_folder(tmp_path,monkeypatch):
     monkeypatch.setenv('FADE_TOOLS_HOME',str(tmp_path/'settings'))
     from PySide6.QtWidgets import QApplication
     from PySide6.QtCore import Qt
-    from clip_window import Cancellation,QDesktopServices
+    from clip_window import Cancellation,QDesktopServices,QueueItemDelegate
     from settings_app import Settings
     app=QApplication.instance() or QApplication([])
     settings=Settings();settings.open_clips();clips=settings.clip_window
     clips.show();app.processEvents()
     token=Cancellation();token.phase('Кодирование NVIDIA NVENC',0,1);token.fraction=.42
-    clips.preview_cancel=token;clips.update_jobs()
-    assert clips.progress.isVisible() and clips.progress.value()==420
-    assert '42%' in clips.processing.text()
+    clips.jobs.addItem('job')
+    item=clips.jobs.item(0)
+    clips.job_tokens.append((item,'job',token))
+    clips.update_jobs()
+    assert not hasattr(clips,'progress')
+    assert item.data(QueueItemDelegate.progress_role)==420
+    assert clips.processing.isHidden()
     token.stage='Чтение метаданных';clips.update_jobs()
-    assert clips.progress.maximum()==1000 and clips.progress.value()==420
-    clips.preview_cancel=None;clips.update_jobs()
-    assert clips.progress.isHidden()
+    assert item.data(QueueItemDelegate.progress_role)==420
+    clips.job_tokens.clear();clips.update_jobs()
+    assert clips.processing.isHidden()
     calls=[]
     monkeypatch.setattr(QDesktopServices,'openUrl',lambda url:calls.append(url.toLocalFile()))
     clips.last_output=tmp_path/'clip.mp4';clips.open_output_folder()

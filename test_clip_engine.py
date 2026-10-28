@@ -310,6 +310,8 @@ def test_window_preview_and_queue(sample, tmp_path, monkeypatch):
     window.in_spin().setValue(.501)
     window.out.setValue(1.502)
     assert window.slider.selection == (501, 1502)
+    assert abs(window.in_spin().value() * window.fps - round(window.in_spin().value() * window.fps)) < 1e-7
+    assert abs(window.out.value() * window.fps - round(window.out.value() * window.fps)) < 1e-7
     assert window.jobs.isHidden()
     window.play_exact()
     assert window.resume_preview

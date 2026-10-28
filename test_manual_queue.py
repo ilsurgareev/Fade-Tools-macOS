@@ -301,7 +301,7 @@ def test_queue_button_stops_active_job_without_resizing_and_keeps_rest_waiting(s
     assert len(clips.waiting_jobs) == 1
     assert clips.render_queue.text() == 'Рендер очереди'
     assert clips.render_queue.width() == button_width
-    assert clips.progress.isHidden()
+    assert not hasattr(clips, 'progress')
     assert 'ошибка:' in clips.jobs.item(0).text().lower()
     clips.start_queue()
     deadline = time.monotonic() + 5
@@ -502,6 +502,7 @@ def test_result_appearing_while_queued_is_not_overwritten(sample, tmp_path, monk
         time.sleep(.01)
     assert existing.read_bytes() == b'created after enqueue'
     assert 'ошибка' in clips.jobs.item(0).text()
-    assert clips.progress.value() < clips.progress.maximum()
+    from clip_window import QueueItemDelegate
+    assert clips.jobs.item(0).data(QueueItemDelegate.progress_role) < 1000
     clips.close()
     settings.close()

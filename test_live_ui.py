@@ -86,7 +86,7 @@ def test_queue_snapshots_without_prepared_preview(sample, tmp_path, monkeypatch)
     assert clips.active == 0
     assert all('готово:' in clips.jobs.item(i).text() for i in range(2))
     files = [Path(clips.jobs.item(i).text().split(' · готово: ',1)[1]) for i in range(2)]
-    assert clips.progress.isHidden()
+    assert not hasattr(clips, 'progress')
     assert all(p.is_file() for p in files)
     assert files[0] != files[1]
     assert files[0].name.endswith('_000.mp4')
@@ -121,7 +121,8 @@ def test_failed_publication_never_shows_100(sample,tmp_path,monkeypatch):
     while clips.active and time.monotonic()<deadline:
         app.processEvents();time.sleep(.01)
     assert clips.active==0
-    assert clips.progress.value()<1000
+    from clip_window import QueueItemDelegate
+    assert clips.jobs.item(0).data(QueueItemDelegate.progress_role)<1000
     assert 'ошибка' in clips.processing.text()
     assert not clips.open_result.isEnabled()
     clips.close();settings.close()

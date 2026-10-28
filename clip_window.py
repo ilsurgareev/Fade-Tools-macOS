@@ -507,11 +507,6 @@ class ClipWindow(QWidget):
         self.processing.setWordWrap(True)
         self.processing.hide()
         layout.addWidget(self.processing)
-        self.progress = QProgressBar(self)
-        self.progress.setRange(0, 1000)
-        self.progress.setTextVisible(False)
-        self.progress.hide()
-        layout.addWidget(self.progress)
         self.saved_label = QLabel('')
         self.saved_label.hide()
         self.jobs = QListWidget()
@@ -754,7 +749,9 @@ class ClipWindow(QWidget):
         self.queue.setEnabled(False)
         self.preview_button.setEnabled(False)
         self.cleanup_previews()
-        self.slider.set_selection(round(self.in_spin().value()*1000), round(self.out.value()*1000))
+        self.snapshot()  # Snap the editable In/Out fields to the source frame grid.
+        self.slider.set_selection(int(round(self.in_spin().value()*self.fps)*1000/self.fps + .5),
+                                   int(round(self.out.value()*self.fps)*1000/self.fps + .5))
         base = Path(clip_name(self.source, self.settings.suffix.text(), self.snapshot()[1]))
         directory = Path(self.settings.folder.text()).expanduser() if self.settings.folder.text() else self.source.parent
         self.queue.setToolTip('Добавить в очередь: ' + str(directory / base) + '\nПри совпадении имени добавятся начало и конец')
@@ -779,9 +776,15 @@ class ClipWindow(QWidget):
             self.notice.setText(str(exc))
 
     def snapshot(self):
-        # Snap marks to the nearest video frame, then display the actual values.
+        # Keep the controls on the source frame grid so preview and queued render agree.
         start = round(self.in_spin().value() * self.fps) / self.fps
         end = round(self.out.value() * self.fps) / self.fps
+        self.in_spin().blockSignals(True)
+        self.out.blockSignals(True)
+        self.in_spin().setValue(start)
+        self.out.setValue(end)
+        self.in_spin().blockSignals(False)
+        self.out.blockSignals(False)
         return self.source, start, end, copy.deepcopy(self.settings.data())
 
     def launch(self, operation, callback):
@@ -933,21 +936,19 @@ class ClipWindow(QWidget):
 
         tokens = ([self.preview_cancel] if self.preview_cancel else []) + [r[2] for r in self.job_tokens]
         token = next((t for t in tokens if t.process is not None), tokens[0] if tokens else None)
-        if token:
-            exact = token is self.preview_cancel
-            label = next((r[1] for r in self.job_tokens if r[2] is token), 'Предпросмотр')
+        if self.job_tokens:
+            # Queue progress belongs to each job row; avoid a duplicate overall indicator.
+            self.processing.hide()
+        elif token and token is self.preview_cancel:
+            label = 'Предпросмотр'
             self.processing.setText(label + ' · ' + token.render_status())
             self.processing.show()
-            self.progress.setValue(int(token.overall_fraction * 1000))
-            self.progress.show()
         elif self.last_render:
             label, error, fraction = self.last_render
             self.processing.setText(label + (' · ошибка сохранения' if error else ' · готово'))
             self.processing.show()
-            self.progress.hide()
         else:
             self.processing.hide()
-            self.progress.hide()
         active_queue = bool(self.active_queue_job)
         self.render_queue.setText('Стоп' if active_queue else 'Рендер очереди')
         self.render_queue.setToolTip('Остановить текущий рендер; остальные задания останутся в очереди'
@@ -1037,10 +1038,8 @@ class ClipWindow(QWidget):
         def done(result, error):
             self.last_render = (label, error, token.overall_fraction)
             self.job_tokens.remove(record)
-            if error:
-                item.setData(QueueItemDelegate.progress_role, None)
-            else:
-                item.setData(QueueItemDelegate.progress_role, 1000)
+            item.setData(QueueItemDelegate.progress_role,
+                         int(token.overall_fraction * 1000) if error else 1000)
             if error and token.event.is_set():
                 self.queue_paused = True
             self.queued_destinations.discard(destination)
