@@ -16,7 +16,7 @@ from PySide6.QtCore import QObject, QUrl, Signal
 from PySide6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest
 
 
-APP_VERSION = '0.2.1'
+APP_VERSION = '0.2.2'
 REPOSITORY = 'ilsurgareev/Fade-Tools-macOS'
 RELEASE_API = f'https://api.github.com/repos/{REPOSITORY}/releases/latest'
 ASSET_NAME = 'Fade-Tools-macOS-AppleSilicon.zip'
@@ -64,6 +64,13 @@ def parse_latest_release(raw: bytes) -> dict:
         'size': size,
         'page': data.get('html_url', f'https://github.com/{REPOSITORY}/releases'),
     }
+
+
+def trusted_asset_redirect(target: QUrl) -> bool:
+    return (target.isValid() and target.scheme() == 'https'
+            and target.host().lower() == 'release-assets.githubusercontent.com'
+            and not target.userName() and not target.password()
+            and target.port(-1) in (-1, 443))
 
 
 def validate_archive(path: Path, expected_digest: str) -> None:
@@ -169,6 +176,7 @@ class UpdateService(QObject):
         self._output = None
         self._digest = None
         self._downloaded = 0
+        self._redirect_count = 0
         self._download_error = ''
 
     @staticmethod
@@ -178,7 +186,7 @@ class UpdateService(QObject):
         request.setRawHeader(b'User-Agent', USER_AGENT.encode('ascii'))
         request.setAttribute(
             QNetworkRequest.Attribute.RedirectPolicyAttribute,
-            QNetworkRequest.RedirectPolicy.NoLessSafeRedirectPolicy,
+            QNetworkRequest.RedirectPolicy.ManualRedirectPolicy,
         )
         return request
 
@@ -213,6 +221,7 @@ class UpdateService(QObject):
         self._release = release
         self._destination = destination
         self._downloaded = 0
+        self._redirect_count = 0
         self._download_error = ''
         try:
             destination.parent.mkdir(parents=True, exist_ok=True)
@@ -225,6 +234,11 @@ class UpdateService(QObject):
         self._reply.readyRead.connect(self._read_download_chunk)
         self._reply.downloadProgress.connect(self._progress)
         self._reply.finished.connect(self._download_reply_finished)
+
+    def _attach_download_reply(self, reply):
+        reply.readyRead.connect(self._read_download_chunk)
+        reply.downloadProgress.connect(self._progress)
+        reply.finished.connect(self._download_reply_finished)
 
     def _read_download_chunk(self):
         if self._reply is None or self._output is None:
@@ -254,6 +268,17 @@ class UpdateService(QObject):
         reply = self._reply
         self._read_download_chunk()
         status = reply.attribute(QNetworkRequest.Attribute.HttpStatusCodeAttribute) if reply else None
+        redirect = reply.attribute(QNetworkRequest.Attribute.RedirectionTargetAttribute) if reply else None
+        if reply and status in (301, 302, 303, 307, 308) and redirect:
+            target = reply.url().resolved(QUrl(redirect))
+            self._redirect_count += 1
+            if self._redirect_count <= 5 and trusted_asset_redirect(target):
+                reply.deleteLater()
+                self._reply = self.manager.get(self._request(
+                    target.toString(), 'application/octet-stream'))
+                self._attach_download_reply(self._reply)
+                return
+            self._download_error = 'Перенаправление загрузки ведёт на недоверенный сервер'
         network_error = reply.errorString() if reply and reply.error() != QNetworkReply.NetworkError.NoError else ''
         if reply:
             reply.deleteLater()
@@ -291,4 +316,5 @@ class UpdateService(QObject):
         self._digest = None
         self._downloaded = 0
         self._download_error = ''
+        self._redirect_count = 0
         self.download_finished.emit(path, error)

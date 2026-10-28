@@ -5,7 +5,9 @@ from pathlib import Path
 
 import pytest
 
-from updater import parse_latest_release, validate_archive, version_tuple
+from PySide6.QtCore import QUrl
+
+from updater import parse_latest_release, trusted_asset_redirect, validate_archive, version_tuple
 
 
 def test_versions_accept_release_tags_and_reject_other_formats():
@@ -13,6 +15,13 @@ def test_versions_accept_release_tags_and_reject_other_formats():
     assert version_tuple('0.2.1') == (0, 2, 1)
     with pytest.raises(ValueError):
         version_tuple('macos-latest')
+
+
+def test_asset_redirect_only_accepts_trusted_https_github_host():
+    assert trusted_asset_redirect(QUrl('https://release-assets.githubusercontent.com/file?sig=private'))
+    assert not trusted_asset_redirect(QUrl('http://release-assets.githubusercontent.com/file'))
+    assert not trusted_asset_redirect(QUrl('https://evil.example/file'))
+    assert not trusted_asset_redirect(QUrl('https://user@release-assets.githubusercontent.com/file'))
 
 
 def test_latest_release_requires_the_expected_asset_and_sha256():
