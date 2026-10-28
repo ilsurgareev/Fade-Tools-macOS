@@ -16,7 +16,8 @@ def test_live_playback_never_starts_encoder(sample, tmp_path, monkeypatch):
     monkeypatch.setattr(clip_window, 'prepare', lambda *a, **k: calls.append(a))
     app = QApplication.instance() or QApplication([])
     settings = Settings()
-    for _, value, _ in settings.rows.values():
+    for _, value, unit in settings.rows.values():
+        unit.setCurrentIndex(unit.findData('seconds'))
         value.setValue(.2)
     settings.open_clips()
     clips = settings.clip_window
@@ -41,6 +42,7 @@ def test_live_playback_never_starts_encoder(sample, tmp_path, monkeypatch):
     assert min(a for v,a in gains) < .1
     clips.seek(700)
     clips.refresh_live_video()
+    settings.rows['audio_in'][2].setCurrentIndex(settings.rows['audio_in'][2].findData('seconds'))
     settings.rows['audio_in'][1].setValue(.4)
     assert clips.live_mode and clips.live_snapshot[3]['fades']['audio_in']['value'] == .4
     clips.show_original()
@@ -62,7 +64,8 @@ def test_queue_snapshots_without_prepared_preview(sample, tmp_path, monkeypatch)
     settings = Settings()
     settings.engine.setCurrentText('CPU')
     settings.folder.setText(str(tmp_path))
-    for _, value, _ in settings.rows.values():
+    for _, value, unit in settings.rows.values():
+        unit.setCurrentIndex(unit.findData('seconds'))
         value.setValue(.1)
     settings.open_clips()
     clips = settings.clip_window
@@ -73,6 +76,7 @@ def test_queue_snapshots_without_prepared_preview(sample, tmp_path, monkeypatch)
     clips.enqueue()
     clips.in_spin().setValue(1.001)
     clips.out.setValue(1.702)
+    settings.rows['audio_in'][2].setCurrentIndex(settings.rows['audio_in'][2].findData('seconds'))
     settings.rows['audio_in'][1].setValue(.2)
     clips.enqueue()
     deadline = time.monotonic()+30

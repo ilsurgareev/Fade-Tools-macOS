@@ -11,12 +11,22 @@ KEYS = ('video_in', 'video_out', 'audio_in', 'audio_out')
 CODECS = ('H.264', 'H.265', 'ProRes', 'DNxHR')
 DEFAULT = {
     'version': 2,
-    'fades': {k: {'enabled': True, 'value': 1.0, 'unit': 'seconds'} for k in KEYS},
+    'fades': {
+        'video_in': {'enabled': True, 'value': 0, 'unit': 'frames'},
+        'video_out': {'enabled': True, 'value': 40, 'unit': 'frames'},
+        'audio_in': {'enabled': True, 'value': 14, 'unit': 'frames'},
+        'audio_out': {'enabled': True, 'value': 53, 'unit': 'frames'},
+    },
     'codec': 'H.265', 'engine': 'Apple VideoToolbox' if sys.platform == 'darwin' else 'NVENC', 'quality': 'master',
     'video_bitrate_mbps': 30,
     'output_dir': '', 'suffix': '_fade', 'notifications': False,
     'presets': {}, 'macos_engine_policy': 1,
 }
+
+# Keep a named copy alongside the reset action so users can see and restore
+# the transferred frame-based workflow immediately.
+_DEFAULT_PRESET = {key: copy.deepcopy(value) for key, value in DEFAULT.items() if key != 'presets'}
+DEFAULT['presets']['Стандартный'] = _DEFAULT_PRESET
 
 
 def app_dir():
@@ -70,6 +80,8 @@ def validate(data):
         candidate.update(preset)
         candidate['presets'] = {}
         validate(candidate)
+    if not isinstance(data.get('macos_engine_policy'), int) or isinstance(data.get('macos_engine_policy'), bool):
+        raise ValueError('Некорректная политика кодирования macOS')
     return data
 
 
@@ -93,6 +105,19 @@ def migrate(data):
         data['engine'] = 'Apple VideoToolbox'
         data['macos_engine_policy'] = 1
         data['presets'] = {name: migrate(preset) for name, preset in data.get('presets', {}).items()}
+    # Settings created by earlier macOS builds used one second for every fade.
+    # Upgrade that untouched stock configuration to the frame-based default,
+    # while preserving any values the user has already customized.
+    if isinstance(data, dict):
+        old_stock_fades = {
+            key: {'enabled': True, 'value': 1.0, 'unit': 'seconds'} for key in KEYS
+        }
+        if data.get('fades') == old_stock_fades or data.get('fades') == {
+                key: {'enabled': True, 'value': 1, 'unit': 'frames'} for key in KEYS}:
+            data['fades'] = copy.deepcopy(DEFAULT['fades'])
+        data.setdefault('presets', {})
+        if isinstance(data['presets'], dict):
+            data['presets'].setdefault('Стандартный', copy.deepcopy(_DEFAULT_PRESET))
     return data
 
 

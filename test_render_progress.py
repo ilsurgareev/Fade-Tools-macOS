@@ -46,7 +46,7 @@ def test_wrong_full_decode_framecount_never_leaves_candidate(sample,tmp_path,mon
         return result
     monkeypatch.setattr(Cancellation,'run_progress',tamper)
     cfg=copy.deepcopy(DEFAULT);cfg['engine']='CPU'
-    for fade in cfg['fades'].values():fade['value']=.1
+    for fade in cfg['fades'].values():fade.update(value=.1,unit='seconds')
     target=tmp_path/'candidate.mp4'
     with pytest.raises(ValueError,match='декодированных'):
         prepare(sample,0,1.001,cfg,target)

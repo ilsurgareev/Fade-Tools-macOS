@@ -18,7 +18,7 @@ def cfg():
     c['codec'] = 'H.264'
     c['engine'] = 'CPU'
     for k in c['fades']:
-        c['fades'][k]['value'] = 0.3
+        c['fades'][k].update(value=0.3, unit='seconds')
     c['fades']['video_in'].update(value=10, unit='frames')
     c['fades']['audio_out'].update(value=5, unit='frames')
     return c
@@ -46,6 +46,42 @@ def test_config_roundtrip(tmp_path, monkeypatch, cfg):
     save(cfg)
     assert load() == cfg
     assert not list(tmp_path.glob('*.tmp'))
+
+
+def test_default_fades_use_frames():
+    assert all(fade['unit'] == 'frames' for fade in DEFAULT['fades'].values())
+    assert [DEFAULT['fades'][key]['value'] for key in ('video_in', 'video_out', 'audio_in', 'audio_out')] == [0, 40, 14, 53]
+    assert DEFAULT['presets']['Стандартный']['fades'] == DEFAULT['fades']
+
+
+def test_migrate_old_stock_fades_to_frame_default():
+    old = copy.deepcopy(DEFAULT)
+    old['fades'] = {
+        key: {'enabled': True, 'value': 1.0, 'unit': 'seconds'}
+        for key in old['fades']
+    }
+    from config import migrate
+    migrated = migrate(old)
+    assert migrated['fades'] == DEFAULT['fades']
+    assert old['fades']['video_in']['unit'] == 'seconds'
+
+
+def test_migrate_preserves_custom_fades():
+    from config import migrate
+    custom = copy.deepcopy(DEFAULT)
+    custom['fades']['video_in'] = {'enabled': True, 'value': 12, 'unit': 'frames'}
+    migrated = migrate(custom)
+    assert migrated['fades']['video_in'] == custom['fades']['video_in']
+
+
+def test_new_user_gets_defaults_and_user_changes_persist(tmp_path, monkeypatch):
+    monkeypatch.setenv('FADE_TOOLS_HOME', str(tmp_path))
+    initial = load()
+    assert initial['fades'] == DEFAULT['fades']
+    changed = copy.deepcopy(initial)
+    changed['fades']['video_out']['value'] = 27
+    save(changed)
+    assert load()['fades']['video_out']['value'] == 27
 
 
 def test_migrate_without_writing(tmp_path, monkeypatch, cfg):
@@ -115,7 +151,7 @@ def test_empty_suffix_never_replaces_the_source_or_previous_output(tmp_path):
     cfg = copy.deepcopy(DEFAULT)
     cfg.update(engine='CPU', suffix='')
     for fade in cfg['fades'].values():
-        fade['value'] = .1
+        fade.update(value=.1, unit='seconds')
     original = source.read_bytes()
     first = process(source, cfg)
     first_bytes = first.read_bytes()
@@ -239,6 +275,7 @@ def test_gui_close_persists(tmp_path, monkeypatch):
     app = QApplication.instance() or QApplication([])
     w = Settings()
     w.show()
+    w.rows['video_in'][2].setCurrentIndex(w.rows['video_in'][2].findData('seconds'))
     w.rows['video_in'][1].setValue(0.72)
     w.rows['audio_out'][2].setCurrentIndex(1)
     w.rows['audio_out'][1].setValue(8)

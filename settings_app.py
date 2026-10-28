@@ -136,6 +136,8 @@ class Settings(QWidget):
         self.preset.addItem('Пресеты…')
         self.preset.addItem('По умолчанию')
         self.preset.addItems(list(self.cfg['presets']))
+        if 'Стандартный' in self.cfg['presets']:
+            self.preset.setCurrentText('Стандартный')
         self.preset.activated.connect(self.use_preset)
         presets.addWidget(self.preset, 1)
         btn = QPushButton('Сохранить пресет')

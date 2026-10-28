@@ -17,7 +17,8 @@ def test_manual_queue_waits_and_preserves_each_snapshot(sample, tmp_path, monkey
     settings.open_clips()
     clips = settings.clip_window
     clips.open_file(str(sample))
-    for _, val, _ in settings.rows.values():
+    for _, val, unit in settings.rows.values():
+        unit.setCurrentIndex(unit.findData('seconds'))
         val.setValue(.1)
     calls = []
     def prepare(source, start, end, cfg, target, **kwargs):
@@ -36,6 +37,7 @@ def test_manual_queue_waits_and_preserves_each_snapshot(sample, tmp_path, monkey
     clips.out.setValue(1.001)
     clips.enqueue()
     settings.folder.setText(str(tmp_path / 'second'))
+    settings.rows['audio_in'][2].setCurrentIndex(settings.rows['audio_in'][2].findData('seconds'))
     settings.rows['audio_in'][1].setValue(.2)
     clips.in_spin().setValue(1.001)
     clips.out.setValue(1.702)
@@ -65,7 +67,8 @@ def test_waiting_jobs_survive_close_and_can_be_removed(sample, tmp_path, monkeyp
     main = MainWindow()
     main.show()
     main.clips.open_file(str(sample))
-    for _, val, _ in main.settings.rows.values():
+    for _, val, unit in main.settings.rows.values():
+        unit.setCurrentIndex(unit.findData('seconds'))
         val.setValue(.1)
     main.clips.out.setValue(1.001)
     main.clips.enqueue()
@@ -92,9 +95,11 @@ def test_restored_job_renders_saved_snapshot(sample, tmp_path, monkeypatch):
     app = QApplication.instance() or QApplication([])
     main = MainWindow()
     main.clips.open_file(str(sample))
-    for _, val, _ in main.settings.rows.values():
+    for _, val, unit in main.settings.rows.values():
+        unit.setCurrentIndex(unit.findData('seconds'))
         val.setValue(.1)
     main.settings.folder.setText(str(tmp_path / 'saved'))
+    main.settings.rows['audio_in'][2].setCurrentIndex(main.settings.rows['audio_in'][2].findData('seconds'))
     main.settings.rows['audio_in'][1].setValue(.2)
     main.clips.out.setValue(1.001)
     main.clips.enqueue()
@@ -149,7 +154,8 @@ def test_clear_queue_removes_all_waiting_and_persists(sample, tmp_path, monkeypa
     app = QApplication.instance() or QApplication([])
     main = MainWindow()
     main.clips.open_file(str(sample))
-    for _, val, _ in main.settings.rows.values():
+    for _, val, unit in main.settings.rows.values():
+        unit.setCurrentIndex(unit.findData('seconds'))
         val.setValue(.1)
     main.clips.out.setValue(1.001)
     main.clips.enqueue()
@@ -175,7 +181,8 @@ def test_clear_queue_save_failure_preserves_jobs(sample, tmp_path, monkeypatch):
     app = QApplication.instance() or QApplication([])
     main = MainWindow()
     main.clips.open_file(str(sample))
-    for _, val, _ in main.settings.rows.values():
+    for _, val, unit in main.settings.rows.values():
+        unit.setCurrentIndex(unit.findData('seconds'))
         val.setValue(.1)
     main.clips.out.setValue(1.001)
     main.clips.enqueue()
@@ -203,7 +210,8 @@ def test_clear_queue_keeps_active_render(sample, tmp_path, monkeypatch):
     main = MainWindow()
     clips = main.clips
     clips.open_file(str(sample))
-    for _, val, _ in main.settings.rows.values():
+    for _, val, unit in main.settings.rows.values():
+        unit.setCurrentIndex(unit.findData('seconds'))
         val.setValue(.1)
     clips.out.setValue(1.001)
     clips.enqueue()
@@ -248,7 +256,8 @@ def test_queue_button_stops_active_job_without_resizing_and_keeps_rest_waiting(s
     settings.open_clips()
     clips = settings.clip_window
     clips.open_file(str(sample))
-    for _, val, _ in settings.rows.values():
+    for _, val, unit in settings.rows.values():
+        unit.setCurrentIndex(unit.findData('seconds'))
         val.setValue(.1)
     clips.out.setValue(1.001)
     clips.enqueue()
@@ -316,7 +325,8 @@ def test_same_second_collisions_get_start_and_end_names(sample, tmp_path, monkey
     settings.open_clips()
     clips = settings.clip_window
     clips.open_file(str(sample))
-    for _, val, _ in settings.rows.values():
+    for _, val, unit in settings.rows.values():
+        unit.setCurrentIndex(unit.findData('seconds'))
         val.setValue(.1)
     clips.out.setValue(1.001)
     clips.enqueue()
@@ -347,7 +357,8 @@ def test_enabling_auto_render_starts_waiting_and_future_jobs(sample, tmp_path, m
     settings.open_clips()
     clips = settings.clip_window
     clips.open_file(str(sample))
-    for _, val, _ in settings.rows.values():
+    for _, val, unit in settings.rows.values():
+        unit.setCurrentIndex(unit.findData('seconds'))
         val.setValue(.1)
     calls = []
     def prepare(source, start, end, cfg, target, **kwargs):
@@ -385,7 +396,8 @@ def test_colliding_jobs_publish_separate_bytes(sample, tmp_path, monkeypatch):
     clips = settings.clip_window
     settings.folder.setText(str(tmp_path / 'exports'))
     clips.open_file(str(sample))
-    for _, val, _ in settings.rows.values():
+    for _, val, unit in settings.rows.values():
+        unit.setCurrentIndex(unit.findData('seconds'))
         val.setValue(.1)
     def prepare(source, start, end, cfg, target, **kwargs):
         target.write_bytes(str(start).encode())
@@ -435,7 +447,8 @@ def test_existing_unknown_result_is_not_overwritten(sample, tmp_path, monkeypatc
     clips = settings.clip_window
     settings.folder.setText(str(tmp_path))
     clips.open_file(str(sample))
-    for _, val, _ in settings.rows.values():
+    for _, val, unit in settings.rows.values():
+        unit.setCurrentIndex(unit.findData('seconds'))
         val.setValue(.1)
     clips.out.setValue(1.001)
     existing = tmp_path / clip_name(sample, settings.suffix.text(), 0)
@@ -471,7 +484,8 @@ def test_result_appearing_while_queued_is_not_overwritten(sample, tmp_path, monk
     clips = settings.clip_window
     settings.folder.setText(str(tmp_path))
     clips.open_file(str(sample))
-    for _, val, _ in settings.rows.values():
+    for _, val, unit in settings.rows.values():
+        unit.setCurrentIndex(unit.findData('seconds'))
         val.setValue(.1)
     clips.out.setValue(1.001)
     clips.enqueue()

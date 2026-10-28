@@ -6,6 +6,8 @@ from live_fade import gain
 
 def test_live_envelopes_end_video_on_last_frame_audio_at_end():
     cfg = copy.deepcopy(DEFAULT)
+    for fade in cfg['fades'].values():
+        fade.update(value=1, unit='seconds')
     assert gain(cfg, 'video', 0, 4, 25) == 0
     assert gain(cfg, 'video', .5, 4, 25) == .5
     assert gain(cfg, 'video', 2, 4, 25) == 1

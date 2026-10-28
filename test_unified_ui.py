@@ -103,6 +103,7 @@ def test_single_window_with_video_left_and_settings_right(tmp_path, monkeypatch)
     app.processEvents()
     assert main.splitter.sizes()[0] < before
     assert not any('Отрывки' in button.text() for button in main.settings.findChildren(QPushButton))
+    main.settings.rows['video_in'][2].setCurrentIndex(main.settings.rows['video_in'][2].findData('seconds'))
     main.settings.rows['video_in'][1].setValue(.7)
     assert main.settings.data()['fades']['video_in']['value'] == .7
     assert main.close()

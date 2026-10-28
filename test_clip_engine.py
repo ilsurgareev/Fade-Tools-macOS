@@ -73,7 +73,7 @@ def test_timecode_and_container_crop_work_together(tmp_path):
     cfg = copy.deepcopy(DEFAULT)
     cfg['engine'] = 'CPU'
     for fade in cfg['fades'].values():
-        fade['value'] = .1
+        fade.update(value=.1, unit='seconds')
     target = tmp_path / 'cropped-clip.mp4'
     prepare(cropped, .4, 1.4, cfg, target)
     after = probe(target)
@@ -97,7 +97,7 @@ def test_verified_timeline_is_reused_and_invalidated_when_source_changes(sample,
     cfg = copy.deepcopy(DEFAULT)
     cfg['engine'] = 'CPU'
     for fade in cfg['fades'].values():
-        fade['value'] = .1
+        fade.update(value=.1, unit='seconds')
     cache = {}
     prepare(source, 0, 1.001, cfg, tmp_path/'first.mp4', analysis_cache=cache)
     prepare(source, .5005, 1.5015, cfg, tmp_path/'second.mp4', analysis_cache=cache)
@@ -114,7 +114,7 @@ def test_clip_preview_and_publication(sample, tmp_path, suffix):
     cfg.update(engine='CPU', output_dir=str(tmp_path))
     cfg['suffix'] = suffix
     for fade in cfg['fades'].values():
-        fade['value'] = .2
+        fade.update(value=.2, unit='seconds')
     before = hashlib.sha256(sample.read_bytes()).digest()
     candidate = tmp_path / '.preview.mp4'
     prepare(sample, 0.5005, 1.5015, cfg, candidate)
@@ -158,7 +158,7 @@ def test_short_and_incomplete_audio_rejected(sample, tmp_path):
     with pytest.raises(ValueError, match='Fade'):
         prepare(sample, 0, 1, cfg, tmp_path / 'short.mp4')
     for fade in cfg['fades'].values():
-        fade['value'] = .1
+        fade.update(value=.1, unit='seconds')
     with pytest.raises(ValueError, match='Аудиодорожка'):
         prepare(sample, 0, 2.002, cfg, tmp_path / 'missing-audio.mp4')
     assert not list(tmp_path.glob('*.mp4'))
@@ -172,7 +172,7 @@ def test_vfr_is_explicitly_rejected(tmp_path):
     cfg = copy.deepcopy(DEFAULT)
     cfg['engine'] = 'CPU'
     for fade in cfg['fades'].values():
-        fade['value'] = .1
+        fade.update(value=.1, unit='seconds')
     with pytest.raises(ValueError, match='частота кадров'):
         prepare(source, 0, 1, cfg, tmp_path / 'out.mp4')
 
@@ -191,7 +191,7 @@ def test_timecode_is_not_silently_dropped(tmp_path, rate, start, end, expected, 
     cfg = copy.deepcopy(DEFAULT)
     cfg['engine'] = 'CPU'
     for fade in cfg['fades'].values():
-        fade['value'] = .1
+        fade.update(value=.1, unit='seconds')
     original = hashlib.sha256(source.read_bytes()).digest()
     target = tmp_path / 'out.mp4'
     prepare(source, start, end, cfg, target)
@@ -223,7 +223,7 @@ def test_timecode_readback_failure_never_leaves_a_candidate(tmp_path, monkeypatc
     cfg = copy.deepcopy(DEFAULT)
     cfg['engine'] = 'CPU'
     for fade in cfg['fades'].values():
-        fade['value'] = .1
+        fade.update(value=.1, unit='seconds')
     with pytest.raises(ValueError, match='timecode отрывка'):
         prepare(source, .4, 1.4, cfg, target)
     assert not target.exists()
@@ -236,7 +236,7 @@ def test_selected_range_matches_source_frames(tmp_path):
     cfg = copy.deepcopy(DEFAULT)
     cfg['engine'] = 'CPU'
     for fade in cfg['fades'].values():
-        fade['value'] = .1
+        fade.update(value=.1, unit='seconds')
     candidate = tmp_path / 'candidate.mp4'
     prepare(source, .4, 1.4, cfg, candidate)
     def frame(path, index):
@@ -261,7 +261,7 @@ def test_selected_audio_range_uses_source_timestamps(tmp_path):
     cfg = copy.deepcopy(DEFAULT)
     cfg['engine'] = 'CPU'
     for fade in cfg['fades'].values():
-        fade['value'] = .1
+        fade.update(value=.1, unit='seconds')
     candidate = tmp_path / 'audio-clip.mp4'
     prepare(source, .4, 1.4, cfg, candidate)
     import array
@@ -281,7 +281,7 @@ def test_ten_bit_depth_is_preserved(tmp_path):
     cfg = copy.deepcopy(DEFAULT)
     cfg['engine'] = 'CPU'
     for fade in cfg['fades'].values():
-        fade['value'] = .1
+        fade.update(value=.1, unit='seconds')
     candidate = tmp_path / 'ten-clip.mp4'
     prepare(source, .4, 1.4, cfg, candidate)
     video = next(s for s in probe(candidate)['streams'] if s['codec_type'] == 'video')
