@@ -3,7 +3,7 @@ import copy
 import os
 import sys
 
-from PySide6.QtCore import QEvent, QPointF, Qt
+from PySide6.QtCore import QEvent, QPointF, Qt, QTimer
 from PySide6.QtGui import QColor, QDesktopServices, QPainter, QPen, QPolygonF
 from PySide6.QtCore import QUrl
 from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDoubleSpinBox,
@@ -121,6 +121,16 @@ class Settings(QWidget):
         description = QLabel('Настройки для отрывков и Fade Droplet.')
         description.setObjectName('muted')
         root.addWidget(description)
+        update_row = QHBoxLayout()
+        self.update_status = QLabel('Проверка обновлений при запуске')
+        self.update_status.setObjectName('muted')
+        self.update_status.setWordWrap(True)
+        update_row.addWidget(self.update_status, 1)
+        self.update_button = QPushButton('Проверить обновления')
+        self.update_button.setToolTip('Проверить публичный канал обновлений Fade Tools для macOS')
+        self.update_button.clicked.connect(self.check_updates)
+        update_row.addWidget(self.update_button)
+        root.addLayout(update_row)
         presets = QHBoxLayout()
         self.preset = QComboBox()
         self.preset.addItem('Пресеты…')
@@ -238,6 +248,124 @@ class Settings(QWidget):
             self.status.setStyleSheet('color:#ffb5ae')
         else:
             self.changed()  # first run creates the shared config
+        self._release = None
+        from updater import UpdateService
+        self._update_service = UpdateService(self)
+        self._update_service.check_finished.connect(self._update_checked)
+        self._update_service.download_progress.connect(self._download_progress)
+        self._update_service.download_finished.connect(self._update_downloaded_from_service)
+        self._install_app_path = None
+        self._install_version = None
+        QTimer.singleShot(1600, self.check_updates)
+
+    def check_updates(self):
+        if self._install_app_path is not None:
+            return
+        if self._release is not None:
+            self._offer_update()
+            return
+        from updater import APP_VERSION
+        self.update_button.setEnabled(False)
+        self.update_button.setText('Проверяем…')
+        self.update_status.setText(f'Проверяем обновления · версия {APP_VERSION}')
+        self.update_status.setStyleSheet('color:#8e8e94')
+        self._update_service.check()
+
+    def _update_checked(self, release, error):
+        self.update_button.setEnabled(True)
+        if error:
+            self.update_button.setText('Проверить ещё раз')
+            self.update_status.setText('Не удалось проверить обновления: ' + error)
+            self.update_status.setStyleSheet('color:#ffb5ae')
+            self.update_button.setToolTip(error)
+            return
+        from updater import APP_VERSION, version_tuple
+        if release['version_tuple'] <= version_tuple(APP_VERSION):
+            self._release = None
+            self.update_button.setText('Проверить обновления')
+            self.update_status.setText(f'Установлена последняя версия · {APP_VERSION}')
+            self.update_status.setStyleSheet('color:#30d158')
+            self.update_button.setToolTip('Публичный канал проверен: новых версий нет')
+            return
+        self._release = release
+        self.update_button.setText(f"Обновить до {release['version']}")
+        self.update_button.setObjectName('primary')
+        self.update_button.setToolTip(f"Доступна Fade Tools {release['version']}")
+        self.update_status.setText(f"Доступно обновление · {release['version']}")
+        self.update_status.setStyleSheet('color:#ffd60a')
+        self._offer_update()
+
+    def _offer_update(self):
+        from PySide6.QtWidgets import QMessageBox
+        from updater import APP_VERSION
+        release = self._release
+        if release is None:
+            return
+        answer = QMessageBox.question(
+            self,
+            'Доступно обновление Fade Tools',
+            f"Установлена версия {APP_VERSION}. Доступна версия {release['version']}.\n\n"
+            'Скачать и установить сейчас? Приложение перезапустится после установки.',
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes,
+        )
+        if answer == QMessageBox.Yes:
+            self._download_update(release)
+
+    def _download_update(self, release):
+        import os
+        import tempfile
+        from pathlib import Path
+        from updater import installed_app_path
+        app_path = installed_app_path()
+        if app_path is None:
+            from PySide6.QtGui import QDesktopServices
+            from PySide6.QtCore import QUrl
+            QDesktopServices.openUrl(QUrl(release['page']))
+            self.update_status.setText('Открыл страницу релиза для установки вручную')
+            return
+        self.update_button.setEnabled(False)
+        self.update_button.setText('Загрузка… 0%')
+        self.update_status.setText('Загрузка и проверка архива обновления…')
+        descriptor, path = tempfile.mkstemp(prefix=f"fade-tools-{release['tag']}-", suffix='.zip')
+        os.close(descriptor)
+        destination = Path(path)
+        self._install_app_path = app_path
+        self._install_version = release['version']
+        self._update_service.download(release, destination)
+
+    def _download_progress(self, percent):
+        self.update_button.setText(f'Загрузка… {percent}%')
+
+    def _update_downloaded(self, archive, error, app_path, version):
+        from PySide6.QtWidgets import QMessageBox, QApplication
+        from updater import start_installer
+        self.update_button.setEnabled(True)
+        if error:
+            self.update_button.setText('Повторить обновление')
+            self.update_status.setText('Не удалось загрузить обновление: ' + error)
+            self.update_status.setStyleSheet('color:#ffb5ae')
+            return
+        try:
+            start_installer(archive, app_path, version)
+        except Exception as exc:
+            archive.unlink(missing_ok=True)
+            self.update_button.setText(f'Обновить до {version}')
+            self.update_status.setText('Не удалось подготовить установку: ' + str(exc))
+            self.update_status.setStyleSheet('color:#ffb5ae')
+            QMessageBox.warning(self, 'Не удалось установить обновление', str(exc))
+            return
+        self.update_button.setText('Перезапуск…')
+        self.update_status.setText('Архив проверен. Fade Tools перезапустится с новой версией.')
+        QApplication.quit()
+
+    def _update_downloaded_from_service(self, archive, error):
+        app_path, version = self._install_app_path, self._install_version
+        self._install_app_path = None
+        self._install_version = None
+        if app_path is None or version is None:
+            return
+        self._update_downloaded(archive, error, app_path, version)
 
     def populate(self, cfg):
         self.loading = True

@@ -108,6 +108,28 @@ def test_single_window_with_video_left_and_settings_right(tmp_path, monkeypatch)
     assert main.close()
 
 
+def test_update_control_reports_errors_and_offers_new_release(tmp_path, monkeypatch):
+    monkeypatch.setattr(tempfile, 'tempdir', str(tmp_path))
+    monkeypatch.setenv('QT_QPA_PLATFORM', 'offscreen')
+    monkeypatch.setenv('FADE_TOOLS_HOME', str(tmp_path / 'settings'))
+    from PySide6.QtWidgets import QApplication
+    from settings_app import MainWindow
+    app = QApplication.instance() or QApplication([])
+    main = MainWindow()
+    settings = main.settings
+    assert settings.update_button.text() == 'Проверить обновления'
+    settings._update_checked(None, 'offline')
+    assert 'offline' in settings.update_status.text()
+    offered = []
+    settings._offer_update = lambda: offered.append(True)
+    settings._update_checked({
+        'version': '0.3.0', 'version_tuple': (0, 3, 0), 'tag': 'macos-v0.3.0',
+    }, '')
+    assert settings.update_button.text() == 'Обновить до 0.3.0'
+    assert offered == [True]
+    assert main.close()
+
+
 def test_unsaved_settings_keep_both_panels_open(tmp_path, monkeypatch):
     monkeypatch.setattr(tempfile, 'tempdir', str(tmp_path))
     monkeypatch.setenv('QT_QPA_PLATFORM', 'offscreen')

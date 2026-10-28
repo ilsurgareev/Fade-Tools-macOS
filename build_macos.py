@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 from media import tool
 from PySide6.QtCore import qVersion
+from updater import APP_VERSION
 
 root = Path(__file__).resolve().parent
 os.chdir(root)
@@ -27,14 +28,14 @@ root = Path(SPECPATH)
 a = Analysis([{entry!r}], pathex=[str(root)],
     binaries={[ (tool('ffmpeg'), 'tools'), (tool('ffprobe'), 'tools') ]!r},
     datas=[(str(root / 'THIRD_PARTY.md'), 'licenses'), (str(root / 'third_party_licenses'), 'licenses'), (str(root / 'bundle-notices'), 'licenses')],
-    hiddenimports=[], hookspath=[], hooksconfig={{}}, runtime_hooks=[], excludes=[], noarchive=False)
+    hiddenimports=['updater'], hookspath=[], hooksconfig={{}}, runtime_hooks=[], excludes=[], noarchive=False)
 pyz = PYZ(a.pure)
 exe = EXE(pyz, a.scripts, [], exclude_binaries=True, name={label!r},
     console=False, argv_emulation=False, target_arch='arm64', codesign_identity=None, entitlements_file=None)
 coll = COLLECT(exe, a.binaries, a.datas, name={label!r})
 app = BUNDLE(coll, name={label + '.app'!r},
     bundle_identifier={'local.fadetools.' + ('droplet' if 'Droplet' in label else 'editor')!r},
-    info_plist={{'LSMinimumSystemVersion': '14.4', 'CFBundleShortVersionString': '0.2.0',
+    info_plist={{'LSMinimumSystemVersion': '14.4', 'CFBundleShortVersionString': {APP_VERSION!r},
         'CFBundleDocumentTypes': [{{'CFBundleTypeName': 'Video', 'CFBundleTypeRole': 'Editor',
             'LSItemContentTypes': ['public.movie', 'public.audiovisual-content']}}]}})
 '''
