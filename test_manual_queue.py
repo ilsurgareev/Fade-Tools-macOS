@@ -1,3 +1,4 @@
+import json
 import time
 import tempfile
 from pathlib import Path
@@ -104,6 +105,13 @@ def test_restored_job_renders_saved_snapshot(sample, tmp_path, monkeypatch):
     main.clips.out.setValue(1.001)
     main.clips.enqueue()
     assert main.close()
+    queue_path = tmp_path / 'settings' / 'clip_queue.json'
+    saved = json.loads(queue_path.read_text(encoding='utf-8'))
+    # Simulate an older queue entry saved with sub-frame precision.
+    saved['jobs'][0]['start'] += .01
+    saved['jobs'][0]['end'] += .01
+    fps = float(saved['jobs'][0]['fps'])
+    queue_path.write_text(json.dumps(saved), encoding='utf-8')
     restored = MainWindow()
     calls = []
     def prepare(source, start, end, cfg, target, **kwargs):
@@ -122,6 +130,8 @@ def test_restored_job_renders_saved_snapshot(sample, tmp_path, monkeypatch):
         app.processEvents()
         time.sleep(.01)
     assert len(calls) == 1 and calls[0][0] == sample, (restored.clips.queue_load_error, restored.clips.notice.text(), [restored.clips.jobs.item(i).text() for i in range(restored.clips.jobs.count())])
+    assert abs(calls[0][1] * fps - round(calls[0][1] * fps)) < 1e-8
+    assert abs(calls[0][2] * fps - round(calls[0][2] * fps)) < 1e-8
     assert calls[0][3:] == (str(tmp_path / 'saved'), .2)
     assert (tmp_path / 'result.mp4').read_bytes() == b'verified'
     assert restored.close()

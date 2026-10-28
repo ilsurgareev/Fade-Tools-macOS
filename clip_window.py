@@ -970,7 +970,15 @@ class ClipWindow(QWidget):
             restored = None  # QPushButton.clicked supplies its checked state.
         if restored is None and (not self.source or not self.live_snapshot):
             return
-        snapshot = (Path(restored['source']), restored['start'], restored['end'], restored['config']) if restored else self.snapshot()
+        if restored:
+            fps = float(restored.get('fps', self.fps))
+            start = round(float(restored['start']) * fps) / fps
+            end = round(float(restored['end']) * fps) / fps
+            if not 0 <= start < end:
+                raise ValueError('После привязки сохранённого задания к кадрам диапазон пуст')
+            snapshot = (Path(restored['source']), start, end, restored['config'])
+        else:
+            snapshot = self.snapshot()
         preview = None if restored else self.candidate
         try:
             source_state = None if restored else (self.candidate_source_state if preview else snapshot[0].stat())
@@ -1010,8 +1018,7 @@ class ClipWindow(QWidget):
         if preview:
             self.queued_previews[preview] = self.queued_previews.get(preview, 0) + 1
         fps = float(restored.get('fps', self.fps)) if restored else self.fps
-        range_label = (restored.get('range_label') if restored else None) or (
-            f'{format_frame_time(snapshot[1], fps)}–{format_frame_time(snapshot[2], fps)}')
+        range_label = f'{format_frame_time(snapshot[1], fps)}–{format_frame_time(snapshot[2], fps)}'
         self.jobs.addItem(label + ' · ' + range_label + ' · в очереди')
         self.jobs.show()
         item = self.jobs.item(self.jobs.count()-1)
