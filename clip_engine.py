@@ -97,6 +97,7 @@ class Cancellation:
         self._stage = ''
         self.fraction = None
         self.speed = ''
+        self.fps = None
         self.started = time.monotonic()
         self.created = self.started
         self._overall = 0.0
@@ -111,6 +112,7 @@ class Cancellation:
     def stage(self, value):
         self.fraction = None
         self.speed = ''
+        self.fps = None
         self.started = time.monotonic()
         self._stage = value
 
@@ -136,12 +138,12 @@ class Cancellation:
 
     def render_status(self):
         elapsed = int(time.monotonic()-self.created)
-        speed = f' · {self.speed}' if self.speed else ''
+        speed = f' · {self.fps:.1f} кадр/с' if self.fps is not None and self.stage.startswith('Кодирование') else ''
         return f'{int(self.overall_fraction*100)}% · {elapsed} с{speed}'
 
     def status_text(self):
         percent = '' if self.fraction is None else f' {int(self.fraction*100)}%'
-        speed = f' · {self.speed}' if self.speed else ''
+        speed = f' · {self.fps:.1f} кадр/с' if self.fps is not None and self.stage.startswith('Кодирование') else ''
         elapsed = int(time.monotonic()-self.started)
         return f'{self.stage}{percent}{speed} · {elapsed} с'
 
@@ -152,6 +154,8 @@ class Cancellation:
         command = list(args)
         command[1:1] = ['-progress', 'pipe:1', '-stats_period', '0.2', '-nostats']
         self.fraction = 0.0
+        progress_started = time.monotonic()
+        reported_fps = False
         with tempfile.TemporaryFile() as errors:
             proc = subprocess.Popen([str(a) for a in command], stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE, stderr=errors,
@@ -170,6 +174,22 @@ class Cancellation:
                             pass
                     elif key == 'speed' and value != 'N/A':
                         self.speed = value.strip()
+                    elif key == 'fps':
+                        try:
+                            fps = float(value)
+                            if math.isfinite(fps) and fps > 0:
+                                self.fps = fps
+                                reported_fps = True
+                        except ValueError:
+                            pass
+                    elif key == 'frame' and not reported_fps:
+                        try:
+                            frames = int(value)
+                            elapsed = time.monotonic() - progress_started
+                            if frames > 0 and elapsed >= .2:
+                                self.fps = frames / elapsed
+                        except ValueError:
+                            pass
                 proc.wait()
             finally:
                 proc.stdout.close()

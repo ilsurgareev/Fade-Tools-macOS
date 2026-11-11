@@ -19,7 +19,7 @@ DEFAULT = {
     },
     'codec': 'H.265', 'engine': 'Apple VideoToolbox' if sys.platform == 'darwin' else 'NVENC', 'quality': 'master',
     'video_bitrate_mbps': 30,
-    'output_dir': '', 'suffix': '', 'notifications': False,
+    'output_dir': '', 'clip_output_mode': 'source', 'suffix': '', 'notifications': False,
     'presets': {}, 'macos_engine_policy': 1,
 }
 
@@ -58,6 +58,8 @@ def validate(data):
         raise ValueError('Суффикс не должен содержать символы пути или заканчиваться точкой/пробелом')
     if not isinstance(data.get('output_dir'), str):
         raise ValueError('Некорректная папка')
+    if data.get('clip_output_mode', 'source') not in ('source', 'custom'):
+        raise ValueError('Некорректный режим папки отрывков')
     if not isinstance(data.get('notifications'), bool):
         raise ValueError('Некорректная настройка уведомлений')
     for key in KEYS:
@@ -109,6 +111,7 @@ def migrate(data):
     # Upgrade that untouched stock configuration to the frame-based default,
     # while preserving any values the user has already customized.
     if isinstance(data, dict):
+        data.setdefault('clip_output_mode', 'custom' if data.get('output_dir') else 'source')
         old_stock_fades = {
             key: {'enabled': True, 'value': 1.0, 'unit': 'seconds'} for key in KEYS
         }

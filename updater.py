@@ -16,7 +16,7 @@ from PySide6.QtCore import QObject, QUrl, Signal
 from PySide6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest
 
 
-APP_VERSION = '0.2.8'
+APP_VERSION = '0.2.9'
 REPOSITORY = 'ilsurgareev/Fade-Tools-macOS'
 RELEASE_API = f'https://api.github.com/repos/{REPOSITORY}/releases/latest'
 ASSET_NAME = 'Fade-Tools-macOS-AppleSilicon.zip'
@@ -137,6 +137,9 @@ cleanup() {
 trap cleanup EXIT
 while /bin/kill -0 "$APP_PID" 2>/dev/null; do /bin/sleep 1; done
 /usr/bin/ditto -x -k "$ARCHIVE" "$STAGE"
+if [[ ! -d "$NEW_APP" ]]; then
+  NEW_APP="$STAGE/Fade-Tools-macOS/Fade Tools.app"
+fi
 [[ -d "$NEW_APP" ]]
 ACTUAL_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$NEW_APP/Contents/Info.plist")"
 [[ "$ACTUAL_VERSION" == "$EXPECTED_VERSION" ]]

@@ -12,6 +12,19 @@ from config import DEFAULT, load, save, validate
 from media import command, encoding, process, probe, run, tool, verify
 
 
+def test_clip_output_mode_migration_preserves_existing_folder():
+    from config import migrate
+    old = copy.deepcopy(DEFAULT)
+    old.pop('clip_output_mode')
+    old['output_dir'] = '/tmp/existing-output'
+    assert migrate(old)['clip_output_mode'] == 'custom'
+    old['output_dir'] = ''
+    assert migrate(old)['clip_output_mode'] == 'source'
+    old['clip_output_mode'] = 'source'
+    old['output_dir'] = '/tmp/existing-output'
+    assert migrate(old)['clip_output_mode'] == 'source'
+
+
 @pytest.fixture
 def cfg():
     c = copy.deepcopy(DEFAULT)

@@ -14,8 +14,8 @@ from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtMultimediaWidgets import QGraphicsVideoItem
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
                                QFileDialog, QSlider, QDoubleSpinBox, QListWidget, QMessageBox,
-                               QStyle, QStyleOptionSlider, QStyledItemDelegate, QGraphicsView, QGraphicsScene,
-                               QFrame, QScrollArea, QGridLayout, QSizePolicy, QProgressBar)
+                               QStyle, QStyleOptionSlider, QStyleOptionViewItem, QStyledItemDelegate, QGraphicsView, QGraphicsScene,
+                               QFrame, QScrollArea, QGridLayout, QSizePolicy, QProgressBar, QProxyStyle, QStyleFactory)
 
 from clip_engine import Cancellation, prepare, publish, visible_dimensions, matching_export
 from live_fade import gain
@@ -38,12 +38,26 @@ class NoticeLabel(QLabel):
 
 class QueueItemDelegate(QStyledItemDelegate):
     progress_role = Qt.UserRole + 1
+    duration_role = Qt.UserRole + 2
 
     def sizeHint(self, option, index):
         return QSize(option.rect.width(), 46)
 
+    def initStyleOption(self, option, index):
+        super().initStyleOption(option, index)
+        if index.data(self.duration_role):
+            option.text = self.parent().fontMetrics().elidedText(
+                option.text, Qt.ElideRight, max(0, option.rect.width() - 126))
+
     def paint(self, painter, option, index):
-        super().paint(painter, option, index)
+        duration = index.data(self.duration_role)
+        item_option = QStyleOptionViewItem(option)
+        super().paint(painter, item_option, index)
+        if duration:
+            painter.save()
+            painter.setPen(QColor('#c9d4e0'))
+            painter.drawText(option.rect.adjusted(0, 0, -12, -5), Qt.AlignRight | Qt.AlignVCenter, duration)
+            painter.restore()
         value = index.data(self.progress_role)
         if value is None:
             return
@@ -88,6 +102,30 @@ class Work(QRunnable):
             self.signals.done.emit(None, str(exc))
 
 
+class PlaybackGrooveStyle(QProxyStyle):
+    """Move the playhead groove down without changing the slider's value range."""
+
+    def vertical_offset(self, option, widget):
+        base = self.baseStyle()
+        groove = base.subControlRect(QStyle.CC_Slider, option, QStyle.SC_SliderGroove, widget)
+        return max(0, widget.height() - 16 - groove.center().y())
+
+    def subControlRect(self, control, option, sub_control, widget=None):
+        rect = self.baseStyle().subControlRect(control, option, sub_control, widget)
+        if (control == QStyle.CC_Slider and widget is not None and
+                sub_control in (QStyle.SC_SliderGroove, QStyle.SC_SliderHandle)):
+            rect.translate(0, self.vertical_offset(option, widget))
+        return rect
+
+    def drawComplexControl(self, control, option, painter, widget=None):
+        if control == QStyle.CC_Slider and widget is not None:
+            shifted = QStyleOptionSlider(option)
+            shifted.rect.translate(0, self.vertical_offset(option, widget))
+            self.baseStyle().drawComplexControl(control, shifted, painter, widget)
+            return
+        super().drawComplexControl(control, option, painter, widget)
+
+
 class RangeSlider(QSlider):
     """Source timeline with independently draggable In, Out and playhead."""
     markersChanged = Signal(int, int)
@@ -99,9 +137,13 @@ class RangeSlider(QSlider):
         self.setRange(0, 1000)
         self.selection = (self.minimum(), self.maximum())
         self.dragging_marker = None
-        self.dragging_range = None
         self.dragging_playhead = False
-        self.setMinimumHeight(68)
+        self.dragging_range = None
+        self.setMouseTracking(True)
+        self.setFixedHeight(64)
+        base_style = QStyleFactory.create(self.style().objectName()) or QStyleFactory.create('Fusion')
+        self._playback_style = PlaybackGrooveStyle(base_style)
+        self.setStyle(self._playback_style)
         self.setAccessibleName('Шкала видео: перетащите In или Out, либо ползунок воспроизведения')
         palette = self.palette()
         highlight = palette.color(QPalette.Highlight)
@@ -133,10 +175,33 @@ class RangeSlider(QSlider):
     def groove_y(self):
         return self.geometry_parts()[1].center().y()
 
+    def playhead_offset(self):
+        option, _, _, _ = self.geometry_parts()
+        return self._playback_style.vertical_offset(option, self)
+
+    def range_y(self):
+        # Leave a clear gap above the playback groove for the In/Out selection.
+        return self.groove_y() - 38
+
+    def range_hit(self, point):
+        a, b = map(self.value_to_x, self.selection)
+        return (self.isEnabled() and self.maximum() > self.minimum() and
+                a < point.x() < b and abs(point.y() - self.range_y()) <= 8)
+
+    def update_hover_cursor(self, point):
+        if self.range_hit(point) or any(self.marker_rect(which).contains(point) for which in ('in', 'out')):
+            self.setCursor(Qt.OpenHandCursor)
+        else:
+            self.unsetCursor()
+
     def marker_rect(self, which):
         value = self.selection[0 if which == 'in' else 1]
         x = max(0, min(self.width() - 36, self.value_to_x(value) - 18))
-        y = 4 if which == 'in' else self.height() - 26
+        y = 4
+        if which == 'out':
+            in_x = max(0, min(self.width() - 36, self.value_to_x(self.selection[0]) - 18))
+            if abs(x - in_x) < 36:
+                y = self.height() - 26
         return QRect(x, y, 36, 22)
 
     def set_selection(self, start, end):
@@ -151,14 +216,38 @@ class RangeSlider(QSlider):
         a, b = map(self.value_to_x, self.selection)
         y = self.groove_y()
         p = QPainter(self)
-        p.setPen(QPen(QColor('#0a84ff'), 3))
-        p.drawLine(a, y - 8, b, y - 8)
+        playhead_x = self.value_to_x(self.value())
+        track = self.palette().color(QPalette.Highlight)
+        hue, saturation, lightness, alpha = track.getHsl()
+        if hue >= 0:
+            track.setHsl(hue, round(saturation * .5), lightness, alpha)
+        else:
+            gray = round(.2126 * track.red() + .7152 * track.green() + .0722 * track.blue())
+            track = QColor(round((track.red() + gray) / 2),
+                           round((track.green() + gray) / 2),
+                           round((track.blue() + gray) / 2), alpha)
+        track_left = self.geometry_parts()[1].left()
+        track_right = self.geometry_parts()[1].right()
+        p.setPen(QPen(track, 3, Qt.SolidLine, Qt.FlatCap))
+        p.drawLine(track_left, y, track_right, y)
+        # Make the playhead easier to locate while keeping the blue track visible.
+        p.setPen(QPen(QColor('#68686f'), 1))
+        p.setBrush(QColor('#39393f'))
+        p.drawRoundedRect(QRect(playhead_x - 9, y - 9, 18, 18), 3, 3)
+        p.setPen(QPen(QColor('#0a84ff'), 16, Qt.SolidLine, Qt.FlatCap))
+        p.drawLine(a, self.range_y(), b, self.range_y())
+        if b - a >= 20:
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor('#80bfff'))
+            center = (a + b) // 2
+            for offset in (-5, 0, 5):
+                p.drawEllipse(QRect(center + offset - 1, self.range_y() - 1, 3, 3))
         for which, position, label in (('in', a, 'In'), ('out', b, 'Out')):
             rect = self.marker_rect(which)
             p.setPen(QPen(QColor('#0a84ff'), 1))
             p.setBrush(QColor('#163a5f'))
             p.drawRoundedRect(rect.adjusted(0, 0, -1, -1), 3, 3)
-            p.drawLine(position, rect.bottom() if which == 'in' else rect.top(), position, y)
+            p.drawLine(position, rect.bottom() if rect.top() < y else rect.top(), position, y)
             p.setPen(QColor('#edf1f7'))
             p.drawText(rect, Qt.AlignCenter, label)
 
@@ -172,8 +261,7 @@ class RangeSlider(QSlider):
                 event.accept()
                 return
         point = event.position().toPoint()
-        a, b = map(self.value_to_x, self.selection)
-        if a < point.x() < b and abs(point.y() - (self.groove_y() - 8)) <= 7:
+        if self.range_hit(point):
             self.dragging_range = (self.x_to_value(point.x()), self.selection)
             self.setCursor(Qt.ClosedHandCursor)
             event.accept()
@@ -209,17 +297,18 @@ class RangeSlider(QSlider):
             self._move_playhead(x)
             event.accept()
         else:
+            self.update_hover_cursor(event.position().toPoint())
             super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):
         if self.dragging_range:
             self.dragging_range = None
-            self.unsetCursor()
+            self.update_hover_cursor(event.position().toPoint())
             self.markersCommitted.emit()
             event.accept()
         elif self.dragging_marker:
             self.dragging_marker = None
-            self.unsetCursor()
+            self.update_hover_cursor(event.position().toPoint())
             self.markersCommitted.emit()
             event.accept()
         elif self.dragging_playhead:
@@ -229,6 +318,11 @@ class RangeSlider(QSlider):
             event.accept()
         else:
             super().mouseReleaseEvent(event)
+
+    def leaveEvent(self, event):
+        if not self.dragging_range and not self.dragging_marker:
+            self.unsetCursor()
+        super().leaveEvent(event)
 
     def keyPressEvent(self, event):
         if event.key() in (Qt.Key_Left, Qt.Key_Right):
@@ -372,6 +466,7 @@ class ClipWindow(QWidget):
         self.playing_preview = None
         self.preview_mode = False
         self.live_mode = False
+        self.stop_at_out = False
         self.live_snapshot = None
         self.job_tokens = []
         self.active_queue_job = None
@@ -435,46 +530,76 @@ class ClipWindow(QWidget):
         self.jobs_timer.start()
         self.player.tracksChanged.connect(self.select_audio)
         self.player.mediaStatusChanged.connect(self.media_status_changed)
+        timeline_controls = QWidget()
+        timeline_layout = QVBoxLayout(timeline_controls)
+        timeline_layout.setContentsMargins(0, 0, 0, 0)
+        timeline_layout.setSpacing(2)
         self.slider = RangeSlider()
         self.slider.setEnabled(False)
-        self.slider.setToolTip('Перетащите In или Out; щёлкните по шкале для перемотки')
+        self.slider.setToolTip('Перетащите синюю линию целиком или флажки In/Out отдельно; щёлкните по шкале для перемотки.')
         self.slider.sliderMoved.connect(self.seek)
         self.slider.frameStep.connect(self.step_frame)
         self.slider.markersChanged.connect(self.markers_changed)
         self.slider.markersCommitted.connect(self.changed)
-        layout.addWidget(self.slider)
+        timeline_layout.addWidget(self.slider)
         self.player.positionChanged.connect(self.position_changed)
         controls_content = QWidget()
         controls = QHBoxLayout(controls_content)
         controls.setContentsMargins(0, 0, 0, 0)
         self.play_button = QPushButton('Воспроизвести / Пауза')
-        self.play_button.setToolTip('Воспроизведение / пауза: пробел')
+        self.play_button.setToolTip('Воспроизведение / пауза с текущего места: Shift + пробел')
         self.play_button.setIcon(white_media_icon(self.style(), QStyle.SP_MediaPlay))
         self.play_button.clicked.connect(self.play)
         self.player.playbackStateChanged.connect(self.playback_state_changed)
-        controls.addWidget(self.play_button)
-        original = QPushButton('Исходное видео')
-        original.clicked.connect(self.show_original)
-        controls.addWidget(original)
+        self.preview_button = QPushButton('Отрывок с Fade')
+        self.preview_button.setIcon(white_media_icon(self.style(), QStyle.SP_MediaPlay))
+        self.preview_button.setEnabled(False)
+        self.preview_button.clicked.connect(self.play_preview)
         self.position_label = QLabel('0:00:00 / 0:00:00')
         self.position_label.setObjectName('muted')
-        controls.addWidget(self.position_label)
-        controls.addStretch(1)
+        marks_widget = QWidget()
+        marks = QHBoxLayout(marks_widget)
+        marks.setContentsMargins(0, 0, 0, 0)
+        marks.setSpacing(6)
         for label in ('In', 'Out'):
-            controls.addWidget(QLabel(label))
+            marks.addWidget(QLabel(label))
             spin = FrameTimeSpinBox()
             spin.setAlignment(Qt.AlignCenter)
             spin.setAccessibleName(label + ': минуты, секунды, кадры')
             spin.setMaximumWidth(120)
             spin.setKeyboardTracking(False)
             spin.valueChanged.connect(self.changed)
-            spin.valueChanged.connect(lambda value: setattr(self, 'first_mark', False))
+            spin.valueChanged.connect(lambda value: setattr(self, "first_mark", False))
             setattr(self, label.lower(), spin)
-            controls.addWidget(spin)
+            marks.addWidget(spin)
             mark = QPushButton(label)
-            mark.setToolTip('Отметить ' + label + ' на текущей позиции')
+            mark.setToolTip('Отметить ' + label + ' на текущей позиции: ' + ('I / Ш' if label == 'In' else 'O / Щ'))
             mark.clicked.connect(lambda checked=False, name=label.lower(): self.mark_position(name))
-            controls.addWidget(mark)
+            marks.addWidget(mark)
+        # Mirror the width of the right-hand markers on the left. Equal-width
+        # side slots keep the playback button itself at the player's centre.
+        spacer = QWidget()
+        spacer.setFixedWidth(marks_widget.sizeHint().width())
+        marks_widget.setFixedWidth(spacer.width())
+        controls.addWidget(spacer)
+        controls.addStretch(1)
+        side_width = max(self.preview_button.sizeHint().width(),
+                         self.position_label.fontMetrics().horizontalAdvance('00:00:00:00 / 00:00:00:00') + 8)
+        left_slot = QWidget()
+        left_slot.setFixedWidth(side_width)
+        left_layout = QHBoxLayout(left_slot)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.addWidget(self.preview_button, 0, Qt.AlignRight)
+        controls.addWidget(left_slot)
+        controls.addWidget(self.play_button)
+        right_slot = QWidget()
+        right_slot.setFixedWidth(side_width)
+        right_layout = QHBoxLayout(right_slot)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.addWidget(self.position_label, 0, Qt.AlignLeft)
+        controls.addWidget(right_slot)
+        controls.addStretch(1)
+        controls.addWidget(marks_widget)
         controls_scroll = QScrollArea()
         controls_scroll.setFrameShape(QFrame.NoFrame)
         controls_scroll.setWidgetResizable(True)
@@ -483,7 +608,8 @@ class ClipWindow(QWidget):
         controls_scroll.setWidget(controls_content)
         controls_scroll.setFixedHeight(controls_content.sizeHint().height()
                                        + controls_scroll.horizontalScrollBar().sizeHint().height() + 2)
-        layout.addWidget(controls_scroll)
+        timeline_layout.addWidget(controls_scroll)
+        layout.addWidget(timeline_controls)
         self.filename = QLabel('')
         self.filename.setWordWrap(True)
         self.filename.hide()
@@ -493,11 +619,12 @@ class ClipWindow(QWidget):
         actions.setColumnStretch(0, 1)
         actions.setColumnStretch(1, 1)
         actions.setColumnStretch(2, 1)
-        self.preview_button = QPushButton('Отрывок с Fade')
-        self.preview_button.setIcon(white_media_icon(self.style(), QStyle.SP_MediaPlay))
-        self.preview_button.setEnabled(False)
-        self.preview_button.clicked.connect(self.play_preview)
-        actions.addWidget(self.preview_button, 0, 0)
+        self.save_queue_button = QPushButton('Сохранить очередь…')
+        self.save_queue_button.setToolTip('Сохранить выполняемое и ожидающие задания в файл')
+        self.save_queue_button.clicked.connect(self.export_queue_dialog)
+        actions.addWidget(self.save_queue_button, 0, 0)
+        self.load_queue_button = QPushButton('Открыть очередь…')
+        self.load_queue_button.clicked.connect(self.import_queue_dialog)
         self.open_result = QPushButton('Открыть папку')
         self.open_result.setEnabled(False)
         self.open_result.clicked.connect(self.open_output_folder)
@@ -521,16 +648,19 @@ class ClipWindow(QWidget):
         self.auto_render = VisibleCheckBox('Рендерить сразу')
         self.auto_render.setToolTip('Начинать рендер при добавлении в очередь')
         self.auto_render.toggled.connect(lambda enabled: self.start_queue() if enabled else None)
-        queue_controls.addWidget(self.auto_render, 1, 0)
+        queue_left = QHBoxLayout()
+        queue_left.setContentsMargins(0, 0, 0, 0)
+        queue_left.setSpacing(6)
+        queue_left.addWidget(self.auto_render)
+        queue_left.addWidget(self.load_queue_button, 1)
+        queue_controls.addLayout(queue_left, 1, 0)
         self.remove_job = QPushButton('Удалить из очереди')
         self.remove_job.setEnabled(False)
         self.remove_job.clicked.connect(self.remove_waiting_job)
         self.clear_queue = QPushButton('Очистить очередь')
-        self.clear_queue.setToolTip('Удалить все ожидающие задания; текущий рендер продолжится')
+        self.clear_queue.setToolTip('Убрать записи из списка; текущий рендер продолжится, готовые файлы сохранятся')
         self.clear_queue.setEnabled(False)
         self.clear_queue.clicked.connect(self.clear_waiting_jobs)
-        self.clear_queue.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
-        self.clear_queue.setMinimumWidth(0)
         self.render_queue = QPushButton('Рендер очереди')
         self.render_queue.setEnabled(False)
         self.render_queue.clicked.connect(self.queue_button_clicked)
@@ -548,20 +678,14 @@ class ClipWindow(QWidget):
         left_queue_pair.setContentsMargins(0, 0, 0, 0)
         left_queue_pair.setSpacing(6)
         left_queue_pair.addWidget(self.clear_queue, 1)
-        left_queue_pair.addWidget(self.render_selected, 1)
+        left_queue_pair.addWidget(self.remove_job, 1)
         queue_controls.addLayout(left_queue_pair, 1, 1)
         render_pair = QHBoxLayout()
         render_pair.setContentsMargins(0, 0, 0, 0)
         render_pair.setSpacing(6)
-        render_pair.addWidget(self.remove_job, 1)
+        render_pair.addWidget(self.render_selected, 1)
         render_pair.addWidget(self.render_queue, 1)
         queue_controls.addLayout(render_pair, 1, 2)
-        self.save_queue_button = QPushButton('Сохранить очередь…')
-        self.save_queue_button.clicked.connect(self.export_queue_dialog)
-        self.load_queue_button = QPushButton('Открыть очередь…')
-        self.load_queue_button.clicked.connect(self.import_queue_dialog)
-        queue_controls.addWidget(self.save_queue_button, 0, 1)
-        queue_controls.addWidget(self.load_queue_button, 0, 2)
         layout.addLayout(queue_controls)
         self.queue_controls = queue_controls
         self.processing = QLabel('')
@@ -570,6 +694,13 @@ class ClipWindow(QWidget):
         layout.addWidget(self.processing)
         self.saved_label = QLabel('')
         self.saved_label.hide()
+        self.queue_heading = QWidget()
+        heading_layout = QHBoxLayout(self.queue_heading)
+        heading_layout.setContentsMargins(6, 0, 12, 0)
+        heading_layout.addWidget(QLabel('Отрывок / состояние'), 1)
+        heading_layout.addWidget(QLabel('Длительность'))
+        self.queue_heading.hide()
+        layout.addWidget(self.queue_heading)
         self.jobs = QListWidget()
         self.jobs.setObjectName('clipJobList')
         self.jobs.setAlternatingRowColors(True)
@@ -599,10 +730,18 @@ class ClipWindow(QWidget):
             value.valueChanged.connect(self.changed)
             unit.currentIndexChanged.connect(self.changed)
         settings.folder.textChanged.connect(self.changed)
+        settings.clip_folder_mode.currentIndexChanged.connect(self.changed)
         settings.suffix.textChanged.connect(self.changed)
         settings.engine.currentIndexChanged.connect(self.changed)
         settings.bitrate.valueChanged.connect(self.changed)
         self.restore_queue()
+
+    @staticmethod
+    def duration_label(seconds):
+        milliseconds = round(seconds * 1000)
+        minutes, remainder = divmod(milliseconds, 60000)
+        sec, ms = divmod(remainder, 1000)
+        return f'{minutes}:{sec:02d}.{ms:03d}'
 
     @staticmethod
     def write_queue_file(path, data):
@@ -826,6 +965,7 @@ class ClipWindow(QWidget):
     def show_original(self, position=None, resume=False):
         if self.source:
             self.live_mode = False
+            self.stop_at_out = False
             self.live_snapshot = None
             self.video.item.setOpacity(1)
             self.audio.setVolume(1)
@@ -844,6 +984,8 @@ class ClipWindow(QWidget):
             self.cleanup_previews()
 
     def media_status_changed(self, status):
+        if self.closing:
+            return
         if self.pending_seek is not None and status in (QMediaPlayer.LoadedMedia, QMediaPlayer.BufferedMedia):
             position, resume = self.pending_seek
             self.pending_seek = None
@@ -859,6 +1001,11 @@ class ClipWindow(QWidget):
         if self.player.playbackState() == QMediaPlayer.PlayingState:
             self.player.pause()
         else:
+            if self.live_snapshot and not self.preview_mode:
+                self.live_mode = True
+                self.stop_at_out = False
+                self.refresh_live_video()
+                self.update_live_audio()
             self.player.play()
 
     def playback_state_changed(self, state):
@@ -911,7 +1058,7 @@ class ClipWindow(QWidget):
         if self.live_mode and self.live_snapshot:
             _, start, end, _ = self.live_snapshot
             if value < round(start*1000) or value >= round(end*1000):
-                self.live_mode = False
+                self.stop_at_out = False
                 self.video.item.setOpacity(1)
                 self.audio.setVolume(1)
         if self.preview_mode:
@@ -969,13 +1116,17 @@ class ClipWindow(QWidget):
         self.slider.set_selection(self._frame_milliseconds(self.in_spin().value()),
                                   self._frame_milliseconds(self.out.value()))
         base = Path(clip_name(self.source, self.settings.suffix.text(), self.snapshot()[1]))
-        directory = Path(self.settings.folder.text()).expanduser() if self.settings.folder.text() else self.source.parent
+        current_cfg = self.settings.data()
+        directory = (self.source.parent / 'Отрывки' if current_cfg.get('clip_output_mode', 'source') == 'source'
+                     else Path(current_cfg['output_dir']).expanduser())
         self.queue.setToolTip('Добавить в очередь: ' + str(directory / base) + '\nПри совпадении имени добавятся начало и конец')
         self.filename.setText('Файл после сохранения: ' + str(directory / base) +
                               ' · При совпадении имени добавятся начало и конец')
         self.timer.stop()
         try:
             snapshot = self.snapshot()
+            if snapshot[3].get('clip_output_mode') == 'custom' and not snapshot[3]['output_dir']:
+                raise ValueError('Выберите папку для отрывков')
             validate_range(snapshot[1], snapshot[2], self.slider.maximum()/1000,
                            snapshot[3], self.fps)
             self.live_snapshot = snapshot
@@ -1001,7 +1152,10 @@ class ClipWindow(QWidget):
         self.out.setValue(end)
         self.in_spin().blockSignals(False)
         self.out.blockSignals(False)
-        return self.source, start, end, copy.deepcopy(self.settings.data())
+        cfg = copy.deepcopy(self.settings.data())
+        if self.source and cfg.get('clip_output_mode', 'source') == 'source':
+            cfg['output_dir'] = str(self.source.parent / 'Отрывки')
+        return self.source, start, end, cfg
 
     def _apply_cached_frame_grid(self, request):
         aligned = self.analysis_cache.get('aligned_range')
@@ -1132,6 +1286,7 @@ class ClipWindow(QWidget):
             self.seek(round(snapshot[1]*1000))
         self.live_snapshot = snapshot
         self.live_mode = True
+        self.stop_at_out = True
         self.refresh_live_video()
         self.update_live_audio()
         self.player.play()
@@ -1149,7 +1304,8 @@ class ClipWindow(QWidget):
     def apply_video_gain(self, position):
         if self.live_mode and self.live_snapshot:
             _, start, end, cfg = self.live_snapshot
-            self.video.item.setOpacity(gain(cfg, 'video', position-start, end-start, self.fps))
+            self.video.item.setOpacity(gain(cfg, 'video', position-start, end-start, self.fps)
+                                       if start <= position < end else 1)
 
     def refresh_live_video(self):
         frame = self.video.videoSink().videoFrame()
@@ -1162,10 +1318,12 @@ class ClipWindow(QWidget):
         if self.live_mode and self.live_snapshot:
             _, start, end, cfg = self.live_snapshot
             position = self.player.position()/1000
-            self.audio.setVolume(gain(cfg, 'audio', position-start, end-start, self.fps))
-            if position >= end:
+            self.audio.setVolume(gain(cfg, 'audio', position-start, end-start, self.fps)
+                                 if start <= position < end else 1)
+            if self.stop_at_out and position >= end:
                 self.player.pause()
                 self.audio.setVolume(0)
+                self.stop_at_out = False
 
     def update_jobs(self):
         for item, label, token in self.job_tokens:
@@ -1197,8 +1355,8 @@ class ClipWindow(QWidget):
         self.render_queue.setText('Стоп' if active_queue else 'Рендер очереди')
         self.render_queue.setToolTip('Остановить текущий рендер; остальные задания останутся в очереди'
                                      if active_queue else '')
-        self.render_queue.setEnabled(active_queue or bool(self.waiting_jobs))
-        self.clear_queue.setEnabled(bool(self.waiting_jobs) and not self.queue_load_error)
+        self.render_queue.setEnabled(active_queue or (not self.queue_load_error and bool(self.waiting_jobs or self.live_snapshot)))
+        self.clear_queue.setEnabled(self.jobs.count() > (1 if active_queue else 0) and (not self.waiting_jobs or not self.queue_load_error))
 
     def open_output_folder(self):
         if self.last_output:
@@ -1209,7 +1367,7 @@ class ClipWindow(QWidget):
         if path:
             QDesktopServices.openUrl(QUrl.fromLocalFile(str(Path(path).parent)))
 
-    def enqueue(self, restored=None):
+    def enqueue(self, restored=None, *, start_automatically=True):
         if isinstance(restored, bool):
             restored = None  # QPushButton.clicked supplies its checked state.
         if restored is None and (not self.source or not self.live_snapshot):
@@ -1265,7 +1423,9 @@ class ClipWindow(QWidget):
         range_label = f'{self.frame_label(snapshot[1])}–{self.frame_label(snapshot[2])}'
         self.jobs.addItem(label + ' · ' + range_label + ' · в очереди')
         self.jobs.show()
+        self.queue_heading.show()
         item = self.jobs.item(self.jobs.count()-1)
+        item.setData(QueueItemDelegate.duration_role, self.duration_label(snapshot[2] - snapshot[1]))
         token = Cancellation()
         record = [item, label, token]
         original_range = snapshot[1:3]
@@ -1328,6 +1488,7 @@ class ClipWindow(QWidget):
                 target.unlink(missing_ok=True)
         def done(result, error):
             self._apply_cached_frame_grid(original_range)
+            item.setData(QueueItemDelegate.duration_role, self.duration_label(snapshot[2] - snapshot[1]))
             self.last_render = (label, error, token.overall_fraction)
             self.job_tokens.remove(record)
             item.setData(QueueItemDelegate.progress_role,
@@ -1380,20 +1541,25 @@ class ClipWindow(QWidget):
                 return
         self.notice.setText('')
         self.update_queue_controls()
-        if not restored and self.auto_render.isChecked():
+        if not restored and start_automatically and self.auto_render.isChecked():
             self.start_queue()
 
     def update_queue_controls(self):
+        self.queue_heading.setVisible(self.jobs.count() > 0)
         active_queue = bool(self.active_queue_job)
-        self.clear_queue.setEnabled(bool(self.waiting_jobs) and not self.queue_load_error)
+        active_style = ('QPushButton, QPushButton:disabled { background:#b52d3a; border:1px solid #d14a55; color:white; }' if active_queue else '')
+        for button in (self.render_queue, self.render_selected):
+            button.setStyleSheet(active_style)
+        self.clear_queue.setEnabled(self.jobs.count() > (1 if active_queue else 0) and (not self.waiting_jobs or not self.queue_load_error))
         self.render_queue.setText('Стоп' if active_queue else 'Рендер очереди')
         self.render_queue.setToolTip('Остановить текущий рендер; остальные задания останутся в очереди'
                                      if active_queue else '')
-        self.render_queue.setEnabled(active_queue or bool(self.waiting_jobs))
+        self.render_queue.setEnabled(active_queue or (not self.queue_load_error and bool(self.waiting_jobs or self.live_snapshot)))
         selected = self.jobs.currentItem()
         selected_waiting = any(job[0][0] is selected for job in self.waiting_jobs)
-        self.remove_job.setEnabled(selected_waiting and not active_queue)
-        self.render_selected.setEnabled(selected_waiting and not active_queue and not self.queue_load_error)
+        selected_active = bool(self.active_queue_job and self.active_queue_job[0][0] is selected)
+        self.remove_job.setEnabled(bool(selected) and not selected_active and (not selected_waiting or (not active_queue and not self.queue_load_error)))
+        self.render_selected.setEnabled((selected_waiting or bool(self.live_snapshot)) and not active_queue and not self.queue_load_error)
 
     def start_queue(self):
         if self.queue_load_error:
@@ -1402,7 +1568,9 @@ class ClipWindow(QWidget):
         if self.active_queue_job:
             return
         if not self.waiting_jobs:
-            return
+            self.enqueue(start_automatically=False)
+            if not self.waiting_jobs:
+                return
         self.queue_paused = False
         self.selected_render_only = False
         self.start_next_queue_job()
@@ -1411,6 +1579,11 @@ class ClipWindow(QWidget):
         if self.active_queue_job or self.queue_load_error:
             return
         selected = self.jobs.currentItem()
+        if not any(job[0][0] is selected for job in self.waiting_jobs) and self.live_snapshot:
+            self.enqueue(start_automatically=False)
+            if not self.waiting_jobs:
+                return
+            selected = self.waiting_jobs[-1][0][0]
         for index, job in enumerate(self.waiting_jobs):
             if job[0][0] is selected:
                 self.waiting_jobs.pop(index)
@@ -1494,15 +1667,22 @@ class ClipWindow(QWidget):
                 self.jobs.setVisible(self.jobs.count() > 0)
                 self.cleanup_previews()
                 break
+        else:
+            if selected and not (self.active_queue_job and self.active_queue_job[0][0] is selected):
+                self.jobs.takeItem(self.jobs.row(selected))
+                self.jobs.setVisible(self.jobs.count() > 0)
+                self.queue_heading.setVisible(self.jobs.count() > 0)
         self.update_queue_controls()
 
     def clear_waiting_jobs(self):
-        if not self.waiting_jobs:
+        active_item = self.active_queue_job[0][0] if self.active_queue_job else None
+        if not self.waiting_jobs and self.jobs.count() <= (1 if active_item else 0):
             return
         waiting = self.waiting_jobs
         self.waiting_jobs = []
         try:
-            self.save_queue()
+            if waiting:
+                self.save_queue()
         except (OSError, ValueError) as exc:
             self.waiting_jobs = waiting
             self.notice.setText('Не удалось сохранить очередь: ' + str(exc))
@@ -1517,7 +1697,11 @@ class ClipWindow(QWidget):
                     del self.queued_previews[preview]
             target.unlink(missing_ok=True)
             self.jobs.takeItem(self.jobs.row(record[0]))
+        for index in range(self.jobs.count() - 1, -1, -1):
+            if self.jobs.item(index) is not active_item:
+                self.jobs.takeItem(index)
         self.jobs.setVisible(self.jobs.count() > 0)
+        self.queue_heading.setVisible(self.jobs.count() > 0)
         self.cleanup_previews()
         self.update_queue_controls()
 

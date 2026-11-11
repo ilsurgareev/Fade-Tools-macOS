@@ -16,14 +16,21 @@ def test_space_controls_playback_with_focus_in_either_panel(tmp_path, monkeypatc
     main.activateWindow()
     app.processEvents()
     calls = []
-    monkeypatch.setattr(main.clips, 'play', lambda: calls.append('toggle'))
-    for control in (main.clips.in_spin(), main.settings.suffix,
-                    main.settings.rows['video_in'][0]):
-        control.setFocus()
-        app.processEvents()
-        QTest.keyClick(control, Qt.Key_Space)
-        app.processEvents()
-    assert calls == ['toggle', 'toggle', 'toggle']
+    monkeypatch.setattr(main.clips, 'play', lambda: calls.append('current'))
+    monkeypatch.setattr(main.clips, 'play_preview', lambda: calls.append('range'))
+    control = main.settings.rows['video_in'][0]
+    control.setFocus()
+    app.processEvents()
+    QTest.keyClick(control, Qt.Key_Space)
+    QTest.keyClick(control, Qt.Key_Space, Qt.ShiftModifier)
+    assert calls == ['range', 'current']
+    main.settings.suffix.setText('ab')
+    main.settings.suffix.setFocus()
+    main.settings.suffix.setCursorPosition(1)
+    app.processEvents()
+    QTest.keyClick(main.settings.suffix, Qt.Key_Space)
+    assert calls == ['range', 'current']
+    assert main.settings.suffix.text() == 'a b'
     assert main.close()
 
 
@@ -39,8 +46,11 @@ def test_mark_controls_share_playback_row(tmp_path, monkeypatch):
     main.show()
     app.processEvents()
     clips = main.clips
-    assert clips.in_spin().geometry().center().y() == clips.position_label.geometry().center().y()
-    assert clips.out.geometry().center().y() == clips.in_spin().geometry().center().y()
+    in_y = clips.in_spin().mapTo(clips, clips.in_spin().rect().center()).y()
+    out_y = clips.out.mapTo(clips, clips.out.rect().center()).y()
+    label_y = clips.position_label.mapTo(clips, clips.position_label.rect().center()).y()
+    assert abs(in_y - label_y) <= 2
+    assert abs(out_y - in_y) <= 2
     assert main.close()
 
 

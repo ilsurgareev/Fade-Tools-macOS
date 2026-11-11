@@ -294,12 +294,12 @@ def test_queue_button_stops_active_job_without_resizing_and_keeps_rest_waiting(s
     app.processEvents()
     assert clips.render_queue.text() == 'Стоп'
     assert clips.render_queue.width() == button_width
-    assert clips.remove_job.width() == clips.render_queue.width()
+    assert abs(clips.render_selected.width() - clips.render_queue.width()) <= 1
     add_left = clips.queue.mapTo(clips, clips.queue.rect().topLeft()).x()
     add_right = clips.queue.mapTo(clips, clips.queue.rect().bottomRight()).x()
-    remove_left = clips.remove_job.mapTo(clips, clips.remove_job.rect().topLeft()).x()
+    render_left = clips.render_selected.mapTo(clips, clips.render_selected.rect().topLeft()).x()
     render_right = clips.render_queue.mapTo(clips, clips.render_queue.rect().bottomRight()).x()
-    assert remove_left == add_left
+    assert render_left == add_left
     assert render_right == add_right
     clips.render_queue.click()
     release.set()

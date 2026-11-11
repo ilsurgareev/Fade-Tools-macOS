@@ -1,16 +1,19 @@
 """Small native settings editor. No processing service is kept running."""
 import copy
+import logging
 import os
 import sys
 
 from PySide6.QtCore import QEvent, QPointF, Qt, QTimer
 from PySide6.QtGui import QColor, QDesktopServices, QPainter, QPen, QPolygonF
 from PySide6.QtCore import QUrl
+from PySide6.QtMultimedia import QMediaPlayer
 from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDoubleSpinBox,
                                QFileDialog, QFormLayout, QGridLayout, QHBoxLayout,
                                QInputDialog, QLabel, QLineEdit, QMessageBox,
                                QPushButton, QVBoxLayout, QWidget, QSpinBox, QSplitter, QScrollArea, QFrame,
-                               QStyle, QStyleOptionButton, QStyleOptionComboBox, QStylePainter)
+                               QStyle, QStyleOptionButton, QStyleOptionComboBox, QStylePainter,
+                               QAbstractSpinBox, QTextEdit, QPlainTextEdit)
 
 from config import DEFAULT, KEYS, app_dir, load, save, seconds
 
@@ -226,12 +229,17 @@ class Settings(QWidget):
         form.addRow('Качество', self.quality)
         form.addRow('Битрейт VBR', self.bitrate)
         folder_row = QHBoxLayout()
+        self.clip_folder_mode = QComboBox()
+        self.clip_folder_mode.addItem('Отрывки рядом с оригиналом', 'source')
+        self.clip_folder_mode.addItem('Выбрать другую папку', 'custom')
+        self.clip_folder_mode.setToolTip('Папка для отрывков. Выбранная вручную папка также используется Droplet.')
+        folder_row.addWidget(self.clip_folder_mode)
         self.folder = QLineEdit()
-        self.folder.setPlaceholderText('Рядом с исходным файлом')
+        self.folder.setPlaceholderText('Выберите папку')
         folder_row.addWidget(self.folder)
-        browse = QPushButton('Выбрать…')
-        browse.clicked.connect(self.browse)
-        folder_row.addWidget(browse)
+        self.folder_browse = QPushButton('Выбрать…')
+        self.folder_browse.clicked.connect(self.browse)
+        folder_row.addWidget(self.folder_browse)
         form.addRow('Папка', folder_row)
         self.suffix = QLineEdit()
         self.suffix.setPlaceholderText('Необязательно')
@@ -261,7 +269,8 @@ class Settings(QWidget):
         root.addWidget(self.status)
         for widget in (self.codec, self.engine, self.quality):
             widget.currentIndexChanged.connect(self.changed)
-        self.folder.textChanged.connect(self.changed)
+        self.folder.textChanged.connect(self.folder_text_changed)
+        self.clip_folder_mode.currentIndexChanged.connect(self.folder_mode_changed)
         self.suffix.textChanged.connect(self.changed)
         self.notifications.toggled.connect(self.changed)
         self.bitrate.valueChanged.connect(self.changed)
@@ -407,6 +416,9 @@ class Settings(QWidget):
         self.quality.setCurrentIndex(0)
         self.bitrate.setValue(round(cfg['video_bitrate_mbps']))
         self.folder.setText(cfg['output_dir'])
+        mode = cfg.get('clip_output_mode', 'custom' if cfg['output_dir'] else 'source')
+        self.clip_folder_mode.setCurrentIndex(max(0, self.clip_folder_mode.findData(mode)))
+        self.update_folder_controls()
         self.suffix.setText(cfg['suffix'])
         self.notifications.setChecked(cfg['notifications'])
         for key, (_, val, unit) in self.rows.items():
@@ -424,6 +436,7 @@ class Settings(QWidget):
                             'unit': unit.currentData()} for key, (on, val, unit) in self.rows.items()}
         d.update(codec=self.codec.currentText(), engine=self.engine.currentText(),
                  quality=self.quality.currentData(), output_dir=self.folder.text().strip(),
+                 clip_output_mode=self.clip_folder_mode.currentData(),
                  video_bitrate_mbps=self.bitrate.value(),
                  suffix=self.suffix.text(), notifications=self.notifications.isChecked())
         return d
@@ -518,6 +531,20 @@ class Settings(QWidget):
         if folder:
             self.folder.setText(folder)
 
+    def update_folder_controls(self):
+        custom = self.clip_folder_mode.currentData() == 'custom'
+        self.folder.setVisible(custom)
+        self.folder_browse.setVisible(custom)
+
+    def folder_mode_changed(self, *args):
+        self.update_folder_controls()
+        self.changed()
+
+    def folder_text_changed(self, text):
+        if not self.loading and text and self.clip_folder_mode.currentData() != 'custom':
+            self.clip_folder_mode.setCurrentIndex(self.clip_folder_mode.findData('custom'))
+        self.changed()
+
     def add_preset(self):
         name, ok = QInputDialog.getText(self, 'Новый пресет', 'Название')
         if ok and name.strip() and name.strip() not in ('Пресеты…', 'По умолчанию'):
@@ -611,8 +638,8 @@ class MainWindow(QWidget):
         self.settings_scroll.setWidget(self.settings)
         self.splitter.addWidget(self.clips)
         self.splitter.addWidget(self.settings_scroll)
-        self.splitter.setStretchFactor(0, 3)
-        self.splitter.setStretchFactor(1, 2)
+        self.splitter.setStretchFactor(0, 1)
+        self.splitter.setStretchFactor(1, 0)
         root = QHBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
@@ -623,14 +650,29 @@ class MainWindow(QWidget):
             self.resize(min(1680, available.width()), min(960, available.height()))
         else:
             self.resize(1440, 900)
-        self.splitter.setSizes([1000, 680])
+        self.splitter.setSizes([max(1, self.width() - 380), 380])
 
     def eventFilter(self, watched, event):
-        if (event.type() == QEvent.KeyPress and event.key() == Qt.Key_Space
-                and event.modifiers() == Qt.NoModifier and self.isActiveWindow()
+        if (event.type() == QEvent.KeyPress and self.isActiveWindow()
                 and isinstance(watched, QWidget) and watched.window() is self):
+            if isinstance(watched, (QLineEdit, QAbstractSpinBox, QTextEdit, QPlainTextEdit)):
+                return super().eventFilter(watched, event)
+            if (event.modifiers() == Qt.NoModifier and
+                    not isinstance(watched, (QLineEdit, QAbstractSpinBox, QTextEdit, QPlainTextEdit))):
+                letter = event.text().casefold()
+                if letter in ('i', 'ш', 'o', 'щ'):
+                    if not event.isAutoRepeat():
+                        self.clips.mark_position('in' if letter in ('i', 'ш') else 'out')
+                    return True
+            if event.key() != Qt.Key_Space or event.modifiers() not in (Qt.NoModifier, Qt.ShiftModifier):
+                return super().eventFilter(watched, event)
             if not event.isAutoRepeat():
-                self.clips.play()
+                if event.modifiers() == Qt.ShiftModifier:
+                    self.clips.play()
+                elif self.clips.player.playbackState() == QMediaPlayer.PlayingState:
+                    self.clips.player.pause()
+                else:
+                    self.clips.play_preview()
             return True
         return super().eventFilter(watched, event)
 
@@ -643,11 +685,37 @@ class MainWindow(QWidget):
 
 
 def main():
-    app = QApplication(sys.argv)
-    app.setStyle('Fusion')
-    window = MainWindow()
-    window.show()
-    return app.exec()
+    from config import app_dir
+    from diagnostics import GuiWatchdog, restore_logging, setup_logging
+    try:
+        logger, resources = setup_logging(app_dir() / 'logs')
+    except OSError:
+        logger, resources = logging.getLogger(), None
+        logger.exception('Unable to start local diagnostics')
+    watchdog = None
+    try:
+        app = QApplication(sys.argv)
+        app.setStyle('Fusion')
+        if resources is not None:
+            try:
+                watchdog = GuiWatchdog(app, app_dir() / 'logs' / f'settings-stacks-{os.getpid()}.log')
+                watchdog.start()
+            except (OSError, RuntimeError):
+                logger.exception('Unable to start GUI watchdog')
+                if watchdog is not None:
+                    watchdog.stop()
+                watchdog = None
+        window = MainWindow()
+        window.show()
+        logger.info('Main window shown')
+        result = app.exec()
+        logger.info('Qt event loop finished; exit=%s', result)
+        return result
+    finally:
+        if watchdog is not None:
+            watchdog.stop()
+        if resources is not None:
+            restore_logging(logger, resources)
 
 
 if __name__ == '__main__':
