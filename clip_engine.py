@@ -346,7 +346,8 @@ def prepare(source, start, end, cfg, target, cancellation=None, analysis_cache=N
     cached = dict(analysis_cache) if analysis_cache and analysis_cache.get('fingerprint') == fingerprint else None
     info = cached['info'] if cached else probe(source, cancellation=cancellation)
     video, audio, fps = inspect(info)
-    visible_width, visible_height = visible_dimensions(video)
+    visible_dimensions(video)  # Reject malformed or unsupported crop metadata.
+    source_width, source_height = int(video['width']), int(video['height'])
     pix = video.get('pix_fmt', '')
     if int(video.get('bits_per_raw_sample') or 0) > 10 or any(str(n) in pix for n in (12, 14, 16)):
         raise ValueError('Видео глубже 10 бит пока не поддерживается')
@@ -389,7 +390,7 @@ def prepare(source, start, end, cfg, target, cancellation=None, analysis_cache=N
     vf = pair_filters(cfg, 'video', fps, clip_length, 0, True, selected_count)
     af = pair_filters(cfg, 'audio', fps, clip_length, 0)
     args = [tool('ffmpeg'), '-hide_banner', '-loglevel', 'warning', '-xerror', '-nostdin', '-n',
-            '-ss', f'{start:.9f}', '-noautorotate', '-apply_cropping', 'all',
+            '-ss', f'{start:.9f}', '-noautorotate', '-apply_cropping', 'codec',
             '-i', source, '-t', f'{clip_length:.9f}',
             '-map', f'0:{video["index"]}']
     for track in audio:
@@ -441,10 +442,10 @@ def prepare(source, start, end, cfg, target, cancellation=None, analysis_cache=N
         output_ten = int(out_v.get('bits_per_raw_sample') or 0) > 8 or '10' in out_v.get('pix_fmt', '')
         if source_ten != output_ten:
             raise ValueError('Проверка результата: изменилась разрядность видео')
-        if (out_v['width'], out_v['height']) != (visible_width, visible_height):
-            raise ValueError('Проверка результата: изменился отображаемый размер видео')
-        if visible_dimensions(out_v) != (visible_width, visible_height):
-            raise ValueError('Проверка результата: обрезка отображения применена повторно')
+        if (out_v['width'], out_v['height']) != (source_width, source_height):
+            raise ValueError('Проверка результата: изменился полный размер кадра')
+        if visible_dimensions(out_v) != (source_width, source_height):
+            raise ValueError('Проверка результата: кадр обрезан метаданными')
         for key in ('sample_aspect_ratio', 'color_range', 'color_space', 'color_transfer', 'color_primaries'):
             if video.get(key) not in (None, 'unknown', 'unspecified') and video.get(key) != out_v.get(key):
                 raise ValueError(f'Проверка результата: изменилось {key}')

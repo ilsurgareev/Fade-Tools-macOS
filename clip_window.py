@@ -2,9 +2,10 @@
 import copy
 import json
 import logging
+import math
 import os
 import tempfile
-from bisect import bisect_left
+from bisect import bisect_left, bisect_right
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, QTimer, QUrl, Signal, Qt, QRect, QRectF, QSize
@@ -91,12 +92,14 @@ class RangeSlider(QSlider):
     """Source timeline with independently draggable In, Out and playhead."""
     markersChanged = Signal(int, int)
     markersCommitted = Signal()
+    frameStep = Signal(int)
 
     def __init__(self):
         super().__init__(Qt.Horizontal)
         self.setRange(0, 1000)
         self.selection = (self.minimum(), self.maximum())
         self.dragging_marker = None
+        self.dragging_range = None
         self.dragging_playhead = False
         self.setMinimumHeight(68)
         self.setAccessibleName('Шкала видео: перетащите In или Out, либо ползунок воспроизведения')
@@ -168,6 +171,13 @@ class RangeSlider(QSlider):
                 self.setCursor(Qt.ClosedHandCursor)
                 event.accept()
                 return
+        point = event.position().toPoint()
+        a, b = map(self.value_to_x, self.selection)
+        if a < point.x() < b and abs(point.y() - (self.groove_y() - 8)) <= 7:
+            self.dragging_range = (self.x_to_value(point.x()), self.selection)
+            self.setCursor(Qt.ClosedHandCursor)
+            event.accept()
+            return
         self.dragging_playhead = True
         self.setSliderDown(True)
         self._move_playhead(event.position().toPoint().x())
@@ -179,7 +189,13 @@ class RangeSlider(QSlider):
 
     def mouseMoveEvent(self, event):
         x = event.position().toPoint().x()
-        if self.dragging_marker:
+        if self.dragging_range:
+            origin, (start, end) = self.dragging_range
+            delta = max(self.minimum() - start, min(self.maximum() - end, self.x_to_value(x) - origin))
+            self.set_selection(start + delta, end + delta)
+            self.markersChanged.emit(start + delta, end + delta)
+            event.accept()
+        elif self.dragging_marker:
             value = self.x_to_value(x)
             start, end = self.selection
             if self.dragging_marker == 'in':
@@ -196,7 +212,12 @@ class RangeSlider(QSlider):
             super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):
-        if self.dragging_marker:
+        if self.dragging_range:
+            self.dragging_range = None
+            self.unsetCursor()
+            self.markersCommitted.emit()
+            event.accept()
+        elif self.dragging_marker:
             self.dragging_marker = None
             self.unsetCursor()
             self.markersCommitted.emit()
@@ -210,6 +231,10 @@ class RangeSlider(QSlider):
             super().mouseReleaseEvent(event)
 
     def keyPressEvent(self, event):
+        if event.key() in (Qt.Key_Left, Qt.Key_Right):
+            self.frameStep.emit(-1 if event.key() == Qt.Key_Left else 1)
+            event.accept()
+            return
         before = self.value()
         super().keyPressEvent(event)
         if self.value() != before:
@@ -284,6 +309,7 @@ class LiveVideo(QGraphicsView):
 
     def __init__(self):
         super().__init__()
+        self.setRenderHint(QPainter.SmoothPixmapTransform, True)
         self.setAcceptDrops(True)
         self.setScene(QGraphicsScene(self))
         self.item = QGraphicsVideoItem()
@@ -413,6 +439,7 @@ class ClipWindow(QWidget):
         self.slider.setEnabled(False)
         self.slider.setToolTip('Перетащите In или Out; щёлкните по шкале для перемотки')
         self.slider.sliderMoved.connect(self.seek)
+        self.slider.frameStep.connect(self.step_frame)
         self.slider.markersChanged.connect(self.markers_changed)
         self.slider.markersCommitted.connect(self.changed)
         layout.addWidget(self.slider)
@@ -441,12 +468,12 @@ class ClipWindow(QWidget):
             spin.setMaximumWidth(120)
             spin.setKeyboardTracking(False)
             spin.valueChanged.connect(self.changed)
+            spin.valueChanged.connect(lambda value: setattr(self, 'first_mark', False))
             setattr(self, label.lower(), spin)
             controls.addWidget(spin)
             mark = QPushButton(label)
             mark.setToolTip('Отметить ' + label + ' на текущей позиции')
-            mark.clicked.connect(lambda checked=False, field=spin: field.setValue(
-                self.player.position()/1000 + (self.preview_start if self.preview_mode else 0)))
+            mark.clicked.connect(lambda checked=False, name=label.lower(): self.mark_position(name))
             controls.addWidget(mark)
         controls_scroll = QScrollArea()
         controls_scroll.setFrameShape(QFrame.NoFrame)
@@ -529,6 +556,12 @@ class ClipWindow(QWidget):
         render_pair.addWidget(self.remove_job, 1)
         render_pair.addWidget(self.render_queue, 1)
         queue_controls.addLayout(render_pair, 1, 2)
+        self.save_queue_button = QPushButton('Сохранить очередь…')
+        self.save_queue_button.clicked.connect(self.export_queue_dialog)
+        self.load_queue_button = QPushButton('Открыть очередь…')
+        self.load_queue_button.clicked.connect(self.import_queue_dialog)
+        queue_controls.addWidget(self.save_queue_button, 0, 1)
+        queue_controls.addWidget(self.load_queue_button, 0, 2)
         layout.addLayout(queue_controls)
         self.queue_controls = queue_controls
         self.processing = QLabel('')
@@ -571,22 +604,108 @@ class ClipWindow(QWidget):
         settings.bitrate.valueChanged.connect(self.changed)
         self.restore_queue()
 
+    @staticmethod
+    def write_queue_file(path, data):
+        path = Path(path)
+        fd, name = tempfile.mkstemp(prefix='queue-', suffix='.tmp', dir=path.parent)
+        try:
+            with os.fdopen(fd, 'w', encoding='utf-8') as stream:
+                json.dump({'version': 1, 'jobs': data}, stream, ensure_ascii=False, allow_nan=False)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(name, path)
+        finally:
+            Path(name).unlink(missing_ok=True)
+
     def save_queue(self):
         if self.queue_load_error:
             raise ValueError(self.queue_load_error)
         root = app_dir()
         root.mkdir(parents=True, exist_ok=True)
         jobs = ([self.active_queue_job] if self.active_queue_job else []) + self.waiting_jobs
-        data = [self.queue_data[job[0][2]] for job in jobs]
-        fd, name = tempfile.mkstemp(prefix='queue-', suffix='.tmp', dir=root)
+        self.write_queue_file(root / 'clip_queue.json', [self.queue_data[job[0][2]] for job in jobs])
+
+    def export_queue_dialog(self):
+        path, _ = QFileDialog.getSaveFileName(self, 'Сохранить очередь', 'Очередь.json', 'Очередь Fade Tools (*.json)')
+        if not path:
+            return
         try:
-            with os.fdopen(fd, 'w', encoding='utf-8') as stream:
-                json.dump({'version': 1, 'jobs': data}, stream, ensure_ascii=False, allow_nan=False)
-                stream.flush()
-                os.fsync(stream.fileno())
-            os.replace(name, root / 'clip_queue.json')
-        finally:
-            Path(name).unlink(missing_ok=True)
+            self.export_queue(path)
+        except (OSError, ValueError) as exc:
+            QMessageBox.warning(self, 'Очередь не сохранена', str(exc))
+
+    def export_queue(self, path):
+        if self.queue_load_error:
+            raise ValueError(self.queue_load_error)
+        jobs = ([self.active_queue_job] if self.active_queue_job else []) + self.waiting_jobs
+        if not jobs:
+            raise ValueError('В очереди нет заданий для сохранения')
+        data = [copy.deepcopy(self.queue_data[job[0][2]]) for job in jobs]
+        target = Path(path).resolve()
+        protected = [Path(entry['source']).resolve() for entry in data]
+        protected += [(Path(entry['config']['output_dir']).expanduser() if entry['config']['output_dir']
+                       else Path(entry['source']).parent) / entry['label'] for entry in data]
+        if self.source:
+            protected.append(self.source)
+        if target == (app_dir() / 'clip_queue.json').resolve() or any(
+                target == p.resolve() or (target.exists() and p.exists() and os.path.samefile(target, p))
+                for p in protected):
+            raise ValueError('Выберите отдельный файл для очереди')
+        self.write_queue_file(target, data)
+
+    def import_queue_dialog(self):
+        path, _ = QFileDialog.getOpenFileName(self, 'Открыть очередь', '', 'Очередь Fade Tools (*.json)')
+        if not path:
+            return
+        try:
+            self.import_queue(path)
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            QMessageBox.warning(self, 'Очередь не открыта', str(exc))
+
+    def import_queue(self, path):
+        if self.queue_load_error or self.waiting_jobs or self.active_queue_job:
+            raise ValueError('Открыть файл можно, когда очередь пуста и рендер не выполняется.')
+        data = json.loads(Path(path).read_text(encoding='utf-8'))
+        if not isinstance(data, dict) or data.get('version') != 1 or not isinstance(data.get('jobs'), list):
+            raise ValueError('Неподдерживаемый формат очереди')
+        entries = data['jobs']
+        destinations = set()
+        sources = {os.path.normcase(str(Path(entry['source']).resolve())) for entry in entries}
+        for entry in entries:
+            validate(entry['config'])
+            source = Path(entry['source'])
+            label = entry['label']
+            start, end, fps = float(entry['start']), float(entry['end']), float(entry['fps'])
+            if (not source.is_absolute() or not isinstance(label, str) or not label or
+                    Path(label).name != label or not math.isfinite(fps) or fps <= 0 or
+                    not math.isfinite(start) or not math.isfinite(end) or not 0 <= start < end or end - start > 60 + 1e-7):
+                raise ValueError('Некорректное задание очереди')
+            for key in ('source_fingerprint', 'output_fingerprint'):
+                value = entry[key]
+                if value is None and key == 'output_fingerprint':
+                    continue
+                if not isinstance(value, list) or len(value) != 4 or any(type(v) is not int for v in value):
+                    raise ValueError('Некорректная контрольная информация очереди')
+            directory = Path(entry['config']['output_dir']).expanduser() if entry['config']['output_dir'] else source.parent
+            destination = os.path.normcase(str((directory / label).resolve()))
+            if destination in destinations or destination in sources:
+                raise ValueError('В очереди совпадают пути результатов или исходника')
+            destinations.add(destination)
+        try:
+            for entry in entries:
+                self.enqueue(entry)
+            self.save_queue()
+        except Exception:
+            for job in self.waiting_jobs:
+                record, _, _, _, target, destination = job
+                self.queue_data.pop(record[2], None)
+                self.queued_destinations.discard(destination)
+                target.unlink(missing_ok=True)
+                self.jobs.takeItem(self.jobs.row(record[0]))
+            self.waiting_jobs.clear()
+            self.update_queue_controls()
+            raise
+        self.update_queue_controls()
 
     def restore_queue(self):
         path = app_dir() / 'clip_queue.json'
@@ -654,14 +773,14 @@ class ClipWindow(QWidget):
             self.out.set_frame_boundaries(None)
             self.audio_tracks = len(audio)
             displayed = visible_dimensions(video)
-            self.crop_note = (f' · Видимая область исходника: {displayed[0]}×{displayed[1]}'
+            self.crop_note = (f' · Предпросмотр: {displayed[0]}×{displayed[1]}; экспорт: полный кадр {video["width"]}×{video["height"]}'
                               if displayed != (video['width'], video['height']) else '')
             self.file_label.setText(self.source.name)
             self.file_label.setToolTip(str(self.source) + self.crop_note)
             self.in_spin().blockSignals(True)
             self.out.blockSignals(True)
             self.in_spin().setValue(0)
-            self.out.setValue(duration(video, info))
+            self.out.setValue(math.floor(min(60, duration(video, info)) * fps + 1e-9) / fps)
             self.in_spin().blockSignals(False)
             self.out.blockSignals(False)
             self.slider.setMaximum(round(duration(video, info) * 1000))
@@ -669,6 +788,7 @@ class ClipWindow(QWidget):
             self.update_position_label(0)
             self.show_original()
             self.changed()
+            self.first_mark = True
             self.timer.stop()
             self.notice.setText('')
         except Exception as exc:
@@ -676,6 +796,32 @@ class ClipWindow(QWidget):
 
     def in_spin(self):
         return getattr(self, 'in')
+
+    def mark_position(self, name):
+        if not self.source:
+            return
+        position = self._frame_time(self.player.position() / 1000 + (self.preview_start if self.preview_mode else 0))
+        if getattr(self, 'first_mark', False):
+            if name == 'in':
+                limit = min(self.slider.maximum() / 1000, position + 60)
+                end = (self.frame_boundaries[max(0, bisect_right(self.frame_boundaries, limit + 1e-9) - 1)]
+                       if self.frame_boundaries else math.floor(limit * self.fps + 1e-9) / self.fps)
+                start = position
+            else:
+                limit = max(0, position - 60)
+                start = (self.frame_boundaries[min(len(self.frame_boundaries) - 1, bisect_left(self.frame_boundaries, limit - 1e-9))]
+                         if self.frame_boundaries else math.ceil(limit * self.fps - 1e-9) / self.fps)
+                end = position
+            self.in_spin().blockSignals(True)
+            self.out.blockSignals(True)
+            self.in_spin().setValue(start)
+            self.out.setValue(end)
+            self.in_spin().blockSignals(False)
+            self.out.blockSignals(False)
+            self.first_mark = False
+            self.changed()
+        else:
+            (self.in_spin() if name == 'in' else self.out).setValue(position)
 
     def show_original(self, position=None, resume=False):
         if self.source:
@@ -782,7 +928,18 @@ class ClipWindow(QWidget):
             return
         self.player.setPosition(value)
 
+    def step_frame(self, delta):
+        current = self.slider.value() / 1000
+        if self.frame_boundaries:
+            index = max(0, min(len(self.frame_boundaries) - 1, self._frame_index(current) + delta))
+            target = self.frame_boundaries[index]
+        else:
+            target = min(max(0, round(current * self.fps) + delta) / self.fps, self.slider.maximum() / 1000)
+        self.player.pause()
+        self.seek(round(target * 1000))
+
     def markers_changed(self, start, end):
+        self.first_mark = False
         self.in_spin().blockSignals(True)
         self.out.blockSignals(True)
         self.in_spin().setValue(start / 1000)

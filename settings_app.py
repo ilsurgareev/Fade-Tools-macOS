@@ -153,6 +153,8 @@ class Settings(QWidget):
         grid = QGridLayout()
         grid.setVerticalSpacing(5)
         self.rows = {}
+        self.fade_undo, self.fade_redo = {}, {}
+        self.fade_history, self.fade_future, self.fade_last, self.fade_units = {}, {}, {}, {}
         for n, (key, label) in enumerate(zip(KEYS, LABELS)):
             on = VisibleCheckBox(label)
             val = QDoubleSpinBox()
@@ -165,12 +167,32 @@ class Settings(QWidget):
             val.setAccessibleName(label + ': длительность')
             unit.setAccessibleName(label + ': единицы')
             self.rows[key] = on, val, unit
+            undo = QPushButton('↶')
+            undo.setToolTip('Вернуть предыдущее значение')
+            undo.setAccessibleName(label + ': вернуть предыдущее значение')
+            undo.setFixedWidth(34)
+            undo.setEnabled(False)
+            undo.clicked.connect(lambda checked=False, k=key: self.undo_fade_value(k))
+            self.fade_undo[key] = undo
+            redo = QPushButton('↷')
+            redo.setToolTip('Вернуть отменённое значение')
+            redo.setAccessibleName(label + ': вернуть отменённое значение')
+            redo.setFixedWidth(34)
+            redo.setEnabled(False)
+            redo.clicked.connect(lambda checked=False, k=key: self.redo_fade_value(k))
+            self.fade_redo[key] = redo
+            self.fade_history[key] = []
+            self.fade_future[key] = []
+            self.fade_last[key] = val.value()
+            self.fade_units[key] = unit.currentData()
             grid.addWidget(on, n, 0)
-            grid.addWidget(val, n, 1)
-            grid.addWidget(unit, n, 2)
+            grid.addWidget(undo, n, 1)
+            grid.addWidget(redo, n, 2)
+            grid.addWidget(val, n, 3)
+            grid.addWidget(unit, n, 4)
             on.toggled.connect(lambda checked, k=key: self.row_change(k))
             unit.currentIndexChanged.connect(lambda index, k=key: self.row_change(k))
-            val.valueChanged.connect(self.changed)
+            val.valueChanged.connect(lambda value, k=key: self.fade_value_changed(k, value))
         grid.setColumnStretch(0, 1)
         root.addLayout(grid)
         self.envelope = Envelope(self)
@@ -387,6 +409,13 @@ class Settings(QWidget):
         self.folder.setText(cfg['output_dir'])
         self.suffix.setText(cfg['suffix'])
         self.notifications.setChecked(cfg['notifications'])
+        for key, (_, val, unit) in self.rows.items():
+            self.fade_last[key] = val.value()
+            self.fade_units[key] = unit.currentData()
+            self.fade_history[key].clear()
+            self.fade_future[key].clear()
+            self.fade_undo[key].setEnabled(False)
+            self.fade_redo[key].setEnabled(False)
         self.loading = False
 
     def data(self):
@@ -409,7 +438,59 @@ class Settings(QWidget):
         unit.setEnabled(on.isChecked())
         val.setDecimals(0 if unit.currentData() == 'frames' else 3)
         val.setSingleStep(1 if unit.currentData() == 'frames' else 0.1)
+        if self.fade_units[key] != unit.currentData():
+            self.fade_history[key].clear()
+            self.fade_future[key].clear()
+        self.fade_units[key] = unit.currentData()
+        self.fade_last[key] = val.value()
+        self.fade_undo[key].setEnabled(bool(self.fade_history[key]))
+        self.fade_redo[key].setEnabled(bool(self.fade_future[key]))
         self.loading = was
+        self.changed()
+
+    def fade_value_changed(self, key, value):
+        if self.loading:
+            return
+        previous = self.fade_last[key]
+        if value != previous:
+            self.fade_history[key].append(previous)
+            self.fade_history[key] = self.fade_history[key][-100:]
+            self.fade_future[key].clear()
+            self.fade_last[key] = value
+            self.fade_undo[key].setEnabled(True)
+            self.fade_redo[key].setEnabled(False)
+        self.changed()
+
+    def undo_fade_value(self, key):
+        history = self.fade_history[key]
+        if not history:
+            return
+        value = history.pop()
+        self.fade_future[key].append(self.rows[key][1].value())
+        self.loading = True
+        try:
+            self.rows[key][1].setValue(value)
+            self.fade_last[key] = self.rows[key][1].value()
+        finally:
+            self.loading = False
+        self.fade_undo[key].setEnabled(bool(history))
+        self.fade_redo[key].setEnabled(True)
+        self.changed()
+
+    def redo_fade_value(self, key):
+        future = self.fade_future[key]
+        if not future:
+            return
+        value = future.pop()
+        self.fade_history[key].append(self.rows[key][1].value())
+        self.loading = True
+        try:
+            self.rows[key][1].setValue(value)
+            self.fade_last[key] = self.rows[key][1].value()
+        finally:
+            self.loading = False
+        self.fade_undo[key].setEnabled(True)
+        self.fade_redo[key].setEnabled(bool(future))
         self.changed()
 
     def changed(self, *args):

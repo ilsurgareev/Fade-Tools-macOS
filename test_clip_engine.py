@@ -118,7 +118,8 @@ def test_timecode_and_container_crop_work_together(tmp_path):
     prepare(cropped, .4, 1.4, cfg, target)
     after = probe(target)
     out = next(s for s in after['streams'] if s['codec_type'] == 'video')
-    assert (out['width'], out['height']) == (158, 90)
+    assert (out['width'], out['height']) == (160, 90)
+    assert visible_dimensions(out) == (160, 90)
     assert out['tags']['timecode'] == '01:00:00:10'
 
 
